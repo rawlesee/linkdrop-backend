@@ -11,11 +11,19 @@ app.set("trust proxy", 1);
 
 app.use(cors({
   origin: "*",
-  exposedHeaders: ["Content-Disposition", "Content-Type"]
+  exposedHeaders: [
+    "Content-Disposition",
+    "Content-Type"
+  ]
 }));
 
-app.use(helmet({ contentSecurityPolicy: false }));
-app.use(express.json({ limit: "32kb" }));
+app.use(helmet({
+  contentSecurityPolicy: false
+}));
+
+app.use(express.json({
+  limit: "32kb"
+}));
 
 app.use("/api/", rateLimit({
   windowMs: 60_000,
@@ -24,13 +32,23 @@ app.use("/api/", rateLimit({
   legacyHeaders: false
 }));
 
+
+/* =========================================================
+   URL VALIDATION
+   ========================================================= */
+
 function validPublicUrl(value: unknown): value is string {
-  if (typeof value !== "string" || value.length > 2048) return false;
+  if (typeof value !== "string" || value.length > 2048) {
+    return false;
+  }
 
   try {
     const u = new URL(value);
 
-    if (u.protocol !== "https:" && u.protocol !== "http:") {
+    if (
+      u.protocol !== "https:" &&
+      u.protocol !== "http:"
+    ) {
       return false;
     }
 
@@ -66,10 +84,16 @@ function validPublicUrl(value: unknown): value is string {
     return allowed.some(
       h => host === h || host.endsWith("." + h)
     );
+
   } catch {
     return false;
   }
 }
+
+
+/* =========================================================
+   SAFE FILENAME
+   ========================================================= */
 
 function safeFilename(name: string, ext: string) {
   const clean = name
@@ -81,12 +105,22 @@ function safeFilename(name: string, ext: string) {
   return `${clean || "LinkDrop_Media"}.${ext}`;
 }
 
+
+/* =========================================================
+   ROOT
+   ========================================================= */
+
 app.get("/", (_req, res) => {
   res.json({
     name: "LinkDrop API",
     status: "online"
   });
 });
+
+
+/* =========================================================
+   HEALTH CHECK
+   ========================================================= */
 
 app.get("/api/health", (_req, res) => {
   res.json({
@@ -98,342 +132,39 @@ app.get("/api/health", (_req, res) => {
 
 
 /* =========================================================
-   ANALYZE
+   DEBUG
+   =========================================================
+   Endpoint sementara untuk mengecek apakah yt-dlp,
+   FFmpeg dan Python tersedia di container Vercel.
    ========================================================= */
 
-app.post("/api/analyze", (req, res) => {
-  const url = req.body?.url;
+app.get("/api/debug", (_req, res) => {
 
-  if (!validPublicUrl(url)) {
-    return res.status(400).json({
-      success: false,
-      message: "URL publik yang didukung diperlukan."
+  const results: Record<string, any> = {};
+
+  const checks: Array<[string, string[]]> = [
+    ["yt-dlp", ["--version"]],
+    ["ffmpeg", ["-version"]],
+    ["python3", ["--version"]]
+  ];
+
+  let remaining = checks.length;
+
+  for (const [command, args] of checks) {
+
+    const p = spawn(
+      command,
+      args,
+      {
+        shell: false
+      }
+    );
+
+    let stdout = "";
+    let stderr = "";
+
+    p.stdout.on("data", d => {
+      stdout += d.toString();
     });
-  }
 
-  console.log("[ANALYZE] Starting yt-dlp");
-  console.log("[ANALYZE] URL:", url);
-
-  const p = spawn("yt-dlp", [
-    "--dump-single-json",
-    "--skip-download",
-    "--no-warnings",
-    "--no-playlist",
-    url
-  ], {
-    shell: false
-  });
-
-  let out = "";
-  let err = "";
-  let timedOut = false;
-
-  const timer = setTimeout(() => {
-    timedOut = true;
-
-    console.error("[ANALYZE] TIMEOUT after 25 seconds");
-
-    p.kill("SIGKILL");
-  }, 25_000);
-
-  p.stdout.on("data", d => {
-    out += d.toString();
-  });
-
-  p.stderr.on("data", d => {
-    err += d.toString();
-
-    // Simpan hanya bagian akhir agar log tidak terlalu besar
-    if (err.length > 8000) {
-      err = err.slice(-8000);
-    }
-  });
-
-  p.on("error", error => {
-    clearTimeout(timer);
-
-    console.error("[ANALYZE] SPAWN ERROR:", error);
-
-    if (!res.headersSent) {
-      return res.status(502).json({
-        success: false,
-        message: "yt-dlp tidak dapat dijalankan di server."
-      });
-    }
-  });
-
-  p.on("close", code => {
-    clearTimeout(timer);
-
-    console.log("[ANALYZE] yt-dlp exit code:", code);
-
-    if (err.trim()) {
-      console.error("[ANALYZE] yt-dlp stderr:");
-      console.error(err);
-    }
-
-    if (timedOut) {
-      return res.status(504).json({
-        success: false,
-        message: "Proses analisis terlalu lama."
-      });
-    }
-
-    if (code !== 0) {
-      return res.status(502).json({
-        success: false,
-        message: "Media tidak tersedia atau platform menolak permintaan.",
-        debug: process.env.NODE_ENV === "development"
-          ? err.slice(-2000)
-          : undefined
-      });
-    }
-
-    try {
-      const meta = JSON.parse(out);
-
-      console.log("[ANALYZE] Success:", meta.title);
-
-      return res.json({
-        success: true,
-        title: meta.title || "Media LinkDrop",
-        thumbnail: meta.thumbnail || "",
-        uploader: meta.uploader || "Publik",
-        duration: meta.duration || 0,
-        formats: [
-          {
-            id: "best",
-            label: "MP4 (Best Available)",
-            extension: "mp4",
-            quality: "best",
-            type: "video"
-          },
-          {
-            id: "audio",
-            label: "MP3 (Audio)",
-            extension: "mp3",
-            quality: "best",
-            type: "audio"
-          }
-        ]
-      });
-
-    } catch (error) {
-      console.error("[ANALYZE] JSON parse error:", error);
-      console.error("[ANALYZE] Raw output:", out.slice(-4000));
-
-      return res.status(502).json({
-        success: false,
-        message: "Gagal membaca metadata media."
-      });
-    }
-  });
-});
-
-
-/* =========================================================
-   DOWNLOAD
-   ========================================================= */
-
-app.post("/api/download", (req, res) => {
-  const { url, formatId } = req.body ?? {};
-
-  if (!validPublicUrl(url)) {
-    return res.status(400).json({
-      success: false,
-      message: "URL publik yang didukung diperlukan."
-    });
-  }
-
-  const audio = formatId === "audio";
-
-  const ext = audio ? "mp3" : "mp4";
-
-  const format = audio
-    ? "bestaudio/best"
-    : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
-
-  console.log("[DOWNLOAD] Starting yt-dlp");
-  console.log("[DOWNLOAD] URL:", url);
-  console.log("[DOWNLOAD] Format:", format);
-
-  const p = spawn("yt-dlp", [
-    "--no-playlist",
-    "--no-warnings",
-    "--newline",
-    "--restrict-filenames",
-
-    "-f",
-    format,
-
-    ...(audio
-      ? [
-          "--extract-audio",
-          "--audio-format",
-          "mp3"
-        ]
-      : [
-          "--merge-output-format",
-          "mp4"
-        ]),
-
-    "-o",
-    "-",
-
-    url
-  ], {
-    shell: false
-  });
-
-  res.statusCode = 200;
-
-  res.setHeader(
-    "Content-Type",
-    audio
-      ? "audio/mpeg"
-      : "video/mp4"
-  );
-
-  res.setHeader(
-    "Content-Disposition",
-    `attachment; filename="${safeFilename("LinkDrop_Media", ext)}"`
-  );
-
-  let started = false;
-  let stderr = "";
-  let timedOut = false;
-
-  p.stdout.on("data", chunk => {
-    started = true;
-    res.write(chunk);
-  });
-
-  p.stderr.on("data", d => {
-    stderr += d.toString();
-
-    if (stderr.length > 8000) {
-      stderr = stderr.slice(-8000);
-    }
-  });
-
-  p.on("error", error => {
-    console.error("[DOWNLOAD] SPAWN ERROR:", error);
-
-    if (!started && !res.headersSent) {
-      return res.status(502).json({
-        success: false,
-        message: "yt-dlp tidak dapat dijalankan di server."
-      });
-    }
-  });
-
-  const timer = setTimeout(() => {
-    timedOut = true;
-
-    console.error("[DOWNLOAD] TIMEOUT after 240 seconds");
-
-    p.kill("SIGKILL");
-  }, 240_000);
-
-  p.on("close", code => {
-    clearTimeout(timer);
-
-    console.log("[DOWNLOAD] yt-dlp exit code:", code);
-
-    if (stderr.trim()) {
-      console.error("[DOWNLOAD] yt-dlp stderr:");
-      console.error(stderr);
-    }
-
-    if (timedOut) {
-      if (!res.writableEnded) {
-        res.end();
-      }
-      return;
-    }
-
-    if (!started && code !== 0) {
-      if (!res.headersSent) {
-        return res.status(502).json({
-          success: false,
-          message: "Gagal memproses file media."
-        });
-      }
-
-      if (!res.writableEnded) {
-        res.end();
-      }
-
-      return;
-    }
-
-    if (!res.writableEnded) {
-      res.end();
-    }
-  });
-
-  req.on("close", () => {
-    if (!res.writableEnded) {
-      p.kill("SIGTERM");
-    }
-  });
-});
-
-
-/* =========================================================
-   SERVER
-   ========================================================= */
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`LinkDrop API listening on ${PORT}`);
-});  }
-
-  const audio = formatId === "audio";
-  const ext = audio ? "mp3" : "mp4";
-  const format = audio
-    ? "bestaudio/best"
-    : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
-
-  const p = spawn("yt-dlp", [
-    "--no-playlist",
-    "--no-warnings",
-    "--newline",
-    "--restrict-filenames",
-    "-f", format,
-    ...(audio ? ["--extract-audio", "--audio-format", "mp3"] : ["--merge-output-format", "mp4"]),
-    "-o", "-",
-    url
-  ], { shell: false });
-
-  res.statusCode = 200;
-  res.setHeader("Content-Type", audio ? "audio/mpeg" : "video/mp4");
-  res.setHeader("Content-Disposition", `attachment; filename="${safeFilename("LinkDrop_Media", ext)}"`);
-
-  let started = false;
-  p.stdout.on("data", chunk => {
-    started = true;
-    res.write(chunk);
-  });
-
-  let stderr = "";
-  p.stderr.on("data", d => { stderr += d.toString().slice(-4000); });
-
-  const timer = setTimeout(() => p.kill("SIGKILL"), 240_000);
-
-  p.on("close", code => {
-    clearTimeout(timer);
-    if (!started && !res.headersSent) {
-      res.statusCode = 502;
-      return res.json({ success: false, message: "Gagal memproses file media." });
-    }
-    if (!res.writableEnded) res.end();
-  });
-
-  req.on("close", () => {
-    if (!res.writableEnded) p.kill("SIGTERM");
-  });
-});
-
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`LinkDrop API listening on ${PORT}`);
-});
+    p

@@ -3,6 +3,9 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import { spawn } from "node:child_process";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -13,7 +16,8 @@ app.use(cors({
   origin: "*",
   exposedHeaders: [
     "Content-Disposition",
-    "Content-Type"
+    "Content-Type",
+    "Content-Length"
   ]
 }));
 
@@ -107,6 +111,84 @@ function safeFilename(name: string, ext: string) {
 
 
 /* =========================================================
+   RUN COMMAND
+   ========================================================= */
+
+function runCommand(
+  command: string,
+  args: string[],
+  timeoutMs: number
+): Promise<{
+  code: number | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}> {
+  return new Promise(resolve => {
+
+    const p = spawn(command, args, {
+      shell: false
+    });
+
+    let stdout = "";
+    let stderr = "";
+    let timedOut = false;
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+
+      console.error(
+        `[COMMAND] ${command} TIMEOUT`
+      );
+
+      p.kill("SIGKILL");
+
+    }, timeoutMs);
+
+    p.stdout.on("data", data => {
+      stdout += data.toString();
+
+      if (stdout.length > 2_000_000) {
+        stdout = stdout.slice(-2_000_000);
+      }
+    });
+
+    p.stderr.on("data", data => {
+      stderr += data.toString();
+
+      if (stderr.length > 12_000) {
+        stderr = stderr.slice(-12_000);
+      }
+    });
+
+    p.on("error", error => {
+      clearTimeout(timer);
+
+      stderr += `\n${error.message}`;
+
+      resolve({
+        code: null,
+        stdout,
+        stderr,
+        timedOut
+      });
+    });
+
+    p.on("close", code => {
+      clearTimeout(timer);
+
+      resolve({
+        code,
+        stdout,
+        stderr,
+        timedOut
+      });
+    });
+  });
+}
+
+
+/* =========================================================
    ROOT
    ========================================================= */
 
@@ -135,7 +217,8 @@ app.get("/api/health", (_req, res) => {
    DEBUG
    ========================================================= */
 
-app.get("/api/debug", (_req, res) => {
+app.get("/api/debug", async (_req, res) => {
+
   const results: Record<string, unknown> = {};
 
   const checks: Array<[string, string[]]> = [
@@ -144,64 +227,33 @@ app.get("/api/debug", (_req, res) => {
     ["python3", ["--version"]]
   ];
 
-  let remaining = checks.length;
-  let responseSent = false;
-
-  function finishIfReady() {
-    if (remaining === 0 && !responseSent) {
-      responseSent = true;
-
-      res.json({
-        status: "debug",
-        results
-      });
-    }
-  }
-
   for (const [command, args] of checks) {
-    const p = spawn(command, args, {
-      shell: false
-    });
 
-    let stdout = "";
-    let stderr = "";
+    const result = await runCommand(
+      command,
+      args,
+      10_000
+    );
 
-    p.stdout.on("data", data => {
-      stdout += data.toString();
-    });
+    results[command] = {
+      installed:
+        result.code === 0,
 
-    p.stderr.on("data", data => {
-      stderr += data.toString();
-    });
+      exitCode:
+        result.code,
 
-    p.on("error", error => {
-      results[command] = {
-        installed: false,
-        error: error.message
-      };
+      stdout:
+        result.stdout.slice(0, 1000),
 
-      remaining--;
-
-      finishIfReady();
-    });
-
-    p.on("close", code => {
-      if (results[command]) {
-        return;
-      }
-
-      results[command] = {
-        installed: code === 0,
-        exitCode: code,
-        stdout: stdout.slice(0, 1000),
-        stderr: stderr.slice(0, 1000)
-      };
-
-      remaining--;
-
-      finishIfReady();
-    });
+      stderr:
+        result.stderr.slice(0, 1000)
+    };
   }
+
+  res.json({
+    status: "debug",
+    results
+  });
 });
 
 
@@ -209,168 +261,139 @@ app.get("/api/debug", (_req, res) => {
    ANALYZE
    ========================================================= */
 
-app.post("/api/analyze", (req, res) => {
+app.post("/api/analyze", async (req, res) => {
+
   const url = req.body?.url;
 
   if (!validPublicUrl(url)) {
     return res.status(400).json({
       success: false,
-      message: "URL publik yang didukung diperlukan."
+      message:
+        "URL publik yang didukung diperlukan."
     });
   }
 
-  console.log("[ANALYZE] Starting yt-dlp");
-  console.log("[ANALYZE] URL:", url);
+  console.log(
+    "[ANALYZE] Starting yt-dlp"
+  );
 
-  const p = spawn("yt-dlp", [
-    "--dump-single-json",
-    "--skip-download",
-    "--no-warnings",
-    "--no-playlist",
+  console.log(
+    "[ANALYZE] URL:",
     url
-  ], {
-    shell: false
-  });
+  );
 
-  let out = "";
-  let err = "";
-  let timedOut = false;
+  const result = await runCommand(
+    "yt-dlp",
+    [
+      "--dump-single-json",
+      "--skip-download",
+      "--no-warnings",
+      "--no-playlist",
+      url
+    ],
+    25_000
+  );
 
-  const timer = setTimeout(() => {
-    timedOut = true;
+  console.log(
+    "[ANALYZE] yt-dlp exit code:",
+    result.code
+  );
 
+  if (result.stderr.trim()) {
     console.error(
-      "[ANALYZE] TIMEOUT after 25 seconds"
+      "[ANALYZE] yt-dlp stderr:"
     );
 
-    p.kill("SIGKILL");
-  }, 25_000);
-
-  p.stdout.on("data", data => {
-    out += data.toString();
-
-    if (out.length > 2_000_000) {
-      out = out.slice(-2_000_000);
-    }
-  });
-
-  p.stderr.on("data", data => {
-    err += data.toString();
-
-    if (err.length > 8_000) {
-      err = err.slice(-8_000);
-    }
-  });
-
-  p.on("error", error => {
-    clearTimeout(timer);
-
     console.error(
-      "[ANALYZE] SPAWN ERROR:",
-      error.message
+      result.stderr
     );
+  }
 
-    if (!res.headersSent) {
-      res.status(502).json({
-        success: false,
-        message: "yt-dlp tidak dapat dijalankan di server."
-      });
-    }
-  });
+  if (result.timedOut) {
+    return res.status(504).json({
+      success: false,
+      message:
+        "Proses analisis terlalu lama."
+    });
+  }
 
-  p.on("close", code => {
-    clearTimeout(timer);
+  if (result.code !== 0) {
+
+    return res.status(502).json({
+      success: false,
+      message:
+        "Media tidak tersedia atau platform menolak permintaan."
+    });
+  }
+
+  try {
+
+    const meta = JSON.parse(
+      result.stdout
+    );
 
     console.log(
-      "[ANALYZE] yt-dlp exit code:",
-      code
+      "[ANALYZE] Success:",
+      meta.title
     );
 
-    if (err.trim()) {
-      console.error(
-        "[ANALYZE] yt-dlp stderr:"
-      );
+    return res.json({
 
-      console.error(err);
-    }
+      success: true,
 
-    if (timedOut) {
-      return res.status(504).json({
-        success: false,
-        message: "Proses analisis terlalu lama."
-      });
-    }
+      title:
+        meta.title ||
+        "Media LinkDrop",
 
-    if (code !== 0) {
-      return res.status(502).json({
-        success: false,
-        message:
-          "Media tidak tersedia atau platform menolak permintaan."
-      });
-    }
+      thumbnail:
+        meta.thumbnail ||
+        "",
 
-    try {
-      const meta = JSON.parse(out);
+      uploader:
+        meta.uploader ||
+        "Publik",
 
-      console.log(
-        "[ANALYZE] Success:",
-        meta.title
-      );
+      duration:
+        meta.duration ||
+        0,
 
-      return res.json({
-        success: true,
+      formats: [
+        {
+          id: "best",
+          label: "MP4 (Best Available)",
+          extension: "mp4",
+          quality: "best",
+          type: "video"
+        },
 
-        title:
-          meta.title ||
-          "Media LinkDrop",
+        {
+          id: "audio",
+          label: "MP3 (Audio)",
+          extension: "mp3",
+          quality: "best",
+          type: "audio"
+        }
+      ]
+    });
 
-        thumbnail:
-          meta.thumbnail ||
-          "",
+  } catch (error) {
 
-        uploader:
-          meta.uploader ||
-          "Publik",
+    console.error(
+      "[ANALYZE] JSON parse error:",
+      error
+    );
 
-        duration:
-          meta.duration ||
-          0,
+    console.error(
+      "[ANALYZE] Raw output:",
+      result.stdout.slice(-4000)
+    );
 
-        formats: [
-          {
-            id: "best",
-            label: "MP4 (Best Available)",
-            extension: "mp4",
-            quality: "best",
-            type: "video"
-          },
-          {
-            id: "audio",
-            label: "MP3 (Audio)",
-            extension: "mp3",
-            quality: "best",
-            type: "audio"
-          }
-        ]
-      });
-
-    } catch (error) {
-      console.error(
-        "[ANALYZE] JSON parse error:",
-        error
-      );
-
-      console.error(
-        "[ANALYZE] Raw output:",
-        out.slice(-4000)
-      );
-
-      return res.status(502).json({
-        success: false,
-        message: "Gagal membaca metadata media."
-      });
-    }
-  });
+    return res.status(502).json({
+      success: false,
+      message:
+        "Gagal membaca metadata media."
+    });
+  }
 });
 
 
@@ -378,28 +401,29 @@ app.post("/api/analyze", (req, res) => {
    DOWNLOAD
    ========================================================= */
 
-app.post("/api/download", (req, res) => {
+app.post("/api/download", async (req, res) => {
+
   const {
     url,
     formatId
   } = req.body ?? {};
 
   if (!validPublicUrl(url)) {
+
     return res.status(400).json({
       success: false,
-      message: "URL publik yang didukung diperlukan."
+      message:
+        "URL publik yang didukung diperlukan."
     });
   }
 
-  const audio = formatId === "audio";
+  const audio =
+    formatId === "audio";
 
-  const ext = audio
-    ? "mp3"
-    : "mp4";
-
-  const format = audio
-    ? "bestaudio/best"
-    : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+  const ext =
+    audio
+      ? "mp3"
+      : "mp4";
 
   console.log(
     "[DOWNLOAD] Starting yt-dlp"
@@ -411,37 +435,300 @@ app.post("/api/download", (req, res) => {
   );
 
   console.log(
-    "[DOWNLOAD] Format:",
-    format
+    "[DOWNLOAD] Type:",
+    audio
+      ? "MP3"
+      : "MP4"
   );
 
-  const p = spawn("yt-dlp", [
+
+  /* =======================================================
+     TEMP DIRECTORY
+     ======================================================= */
+
+  const tempDir =
+    await fs.mkdtemp(
+      path.join(
+        os.tmpdir(),
+        "linkdrop-"
+      )
+    );
+
+  const outputTemplate =
+    path.join(
+      tempDir,
+      "media.%(ext)s"
+    );
+
+
+  /* =======================================================
+     YT-DLP ARGUMENTS
+     ======================================================= */
+
+  const args = [
     "--no-playlist",
     "--no-warnings",
     "--newline",
-    "--restrict-filenames",
+    "--restrict-filenames"
+  ];
 
-    "-f",
-    format,
 
-    ...(audio
-      ? [
-          "--extract-audio",
-          "--audio-format",
-          "mp3"
-        ]
-      : [
-          "--merge-output-format",
-          "mp4"
-        ]),
+  if (audio) {
 
+    args.push(
+      "-f",
+      "bestaudio/best",
+
+      "--extract-audio",
+
+      "--audio-format",
+      "mp3",
+
+      "--audio-quality",
+      "0"
+    );
+
+  } else {
+
+    args.push(
+      "-f",
+      "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+
+      "--merge-output-format",
+      "mp4",
+
+      // Make the MP4 start playing immediately
+      // on mobile/browser players.
+      "--postprocessor-args",
+      "Merger+ffmpeg:-movflags +faststart"
+    );
+  }
+
+
+  args.push(
     "-o",
-    "-",
-
+    outputTemplate,
     url
-  ], {
-    shell: false
-  });
+  );
+
+
+  console.log(
+    "[DOWNLOAD] Running yt-dlp..."
+  );
+
+
+  /* =======================================================
+     RUN YT-DLP
+     ======================================================= */
+
+  const result =
+    await runCommand(
+      "yt-dlp",
+      args,
+      240_000
+    );
+
+
+  console.log(
+    "[DOWNLOAD] yt-dlp exit code:",
+    result.code
+  );
+
+
+  if (result.stderr.trim()) {
+
+    console.error(
+      "[DOWNLOAD] yt-dlp stderr:"
+    );
+
+    console.error(
+      result.stderr
+    );
+  }
+
+
+  if (result.timedOut) {
+
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+
+    return res.status(504).json({
+      success: false,
+      message:
+        "Proses download terlalu lama."
+    });
+  }
+
+
+  if (result.code !== 0) {
+
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+
+    return res.status(502).json({
+      success: false,
+      message:
+        "Gagal memproses file media."
+    });
+  }
+
+
+  /* =======================================================
+     FIND OUTPUT FILE
+     ======================================================= */
+
+  let files: string[] = [];
+
+  try {
+
+    files =
+      await fs.readdir(
+        tempDir
+      );
+
+  } catch {
+
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+
+    return res.status(502).json({
+      success: false,
+      message:
+        "File hasil download tidak ditemukan."
+    });
+  }
+
+
+  console.log(
+    "[DOWNLOAD] Output files:",
+    files
+  );
+
+
+  let outputFile: string | null =
+    null;
+
+
+  if (audio) {
+
+    const mp3 =
+      files.find(
+        file =>
+          file.toLowerCase().endsWith(".mp3")
+      );
+
+    if (mp3) {
+      outputFile =
+        path.join(
+          tempDir,
+          mp3
+        );
+    }
+
+  } else {
+
+    const mp4 =
+      files.find(
+        file =>
+          file.toLowerCase().endsWith(".mp4")
+      );
+
+    if (mp4) {
+      outputFile =
+        path.join(
+          tempDir,
+          mp4
+        );
+    }
+  }
+
+
+  if (!outputFile) {
+
+    console.error(
+      "[DOWNLOAD] No final output file found"
+    );
+
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+
+    return res.status(502).json({
+      success: false,
+      message:
+        "File hasil download tidak ditemukan."
+    });
+  }
+
+
+  /* =======================================================
+     CHECK FILE SIZE
+     ======================================================= */
+
+  const stat =
+    await fs.stat(
+      outputFile
+    );
+
+
+  console.log(
+    "[DOWNLOAD] Final file size:",
+    stat.size,
+    "bytes"
+  );
+
+
+  if (stat.size < 1024) {
+
+    console.error(
+      "[DOWNLOAD] Output file is suspiciously small"
+    );
+
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true
+      }
+    );
+
+    return res.status(502).json({
+      success: false,
+      message:
+        "File media yang dihasilkan tidak valid."
+    });
+  }
+
+
+  /* =======================================================
+     SEND FILE
+     ======================================================= */
+
+  const filename =
+    safeFilename(
+      "LinkDrop_Media",
+      ext
+    );
+
 
   res.statusCode = 200;
 
@@ -454,102 +741,86 @@ app.post("/api/download", (req, res) => {
 
   res.setHeader(
     "Content-Disposition",
-    `attachment; filename="${safeFilename(
-      "LinkDrop_Media",
-      ext
-    )}"`
+    `attachment; filename="${filename}"`
   );
 
-  let started = false;
-  let stderr = "";
-  let timedOut = false;
+  res.setHeader(
+    "Content-Length",
+    String(stat.size)
+  );
 
-  p.stdout.on("data", chunk => {
-    started = true;
-    res.write(chunk);
-  });
 
-  p.stderr.on("data", data => {
-    stderr += data.toString();
+  console.log(
+    "[DOWNLOAD] Sending file:",
+    filename
+  );
 
-    if (stderr.length > 8_000) {
-      stderr = stderr.slice(-8_000);
-    }
-  });
 
-  p.on("error", error => {
-    console.error(
-      "[DOWNLOAD] SPAWN ERROR:",
-      error.message
-    );
+  /* =======================================================
+     STREAM FILE TO CLIENT
+     ======================================================= */
 
-    if (!started && !res.headersSent) {
-      res.status(502).json({
-        success: false,
-        message:
-          "yt-dlp tidak dapat dijalankan di server."
-      });
-    }
-  });
-
-  const timer = setTimeout(() => {
-    timedOut = true;
-
-    console.error(
-      "[DOWNLOAD] TIMEOUT after 240 seconds"
-    );
-
-    p.kill("SIGKILL");
-  }, 240_000);
-
-  p.on("close", code => {
-    clearTimeout(timer);
-
-    console.log(
-      "[DOWNLOAD] yt-dlp exit code:",
-      code
-    );
-
-    if (stderr.trim()) {
-      console.error(
-        "[DOWNLOAD] yt-dlp stderr:"
+  const fileStream =
+    (await import("node:fs"))
+      .createReadStream(
+        outputFile
       );
 
-      console.error(stderr);
-    }
 
-    if (timedOut) {
-      if (!res.writableEnded) {
-        res.end();
-      }
+  fileStream.on(
+    "error",
+    async error => {
 
-      return;
-    }
+      console.error(
+        "[DOWNLOAD] File stream error:",
+        error
+      );
 
-    if (!started && code !== 0) {
       if (!res.headersSent) {
-        res.status(502).json({
+        res.status(500).json({
           success: false,
           message:
-            "Gagal memproses file media."
+            "Gagal mengirim file."
         });
-      } else if (!res.writableEnded) {
-        res.end();
+      } else {
+        res.destroy(error);
       }
 
-      return;
+      await fs.rm(
+        tempDir,
+        {
+          recursive: true,
+          force: true
+        }
+      );
     }
+  );
 
-    if (!res.writableEnded) {
-      res.end();
-    }
-  });
 
-  req.on("close", () => {
-    if (!res.writableEnded) {
-      p.kill("SIGTERM");
+  fileStream.on(
+    "close",
+    async () => {
+
+      console.log(
+        "[DOWNLOAD] File stream closed"
+      );
+
+      await fs.rm(
+        tempDir,
+        {
+          recursive: true,
+          force: true
+        }
+      );
+
+      console.log(
+        "[DOWNLOAD] Temp files cleaned"
+      );
     }
-  });
+  );
+
+
+  fileStream.pipe(res);
 });
 
 
@@ -561,6 +832,7 @@ app.listen(
   PORT,
   "0.0.0.0",
   () => {
+
     console.log(
       `LinkDrop API listening on ${PORT}`
     );

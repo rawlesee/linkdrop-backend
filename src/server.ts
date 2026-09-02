@@ -8,7 +8,12 @@ const app = express();
 const PORT = Number(process.env.PORT || 3000);
 
 app.set("trust proxy", 1);
-app.use(cors({ origin: "*", exposedHeaders: ["Content-Disposition", "Content-Type"] }));
+
+app.use(cors({
+  origin: "*",
+  exposedHeaders: ["Content-Disposition", "Content-Type"]
+}));
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(express.json({ limit: "32kb" }));
 
@@ -21,19 +26,46 @@ app.use("/api/", rateLimit({
 
 function validPublicUrl(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 2048) return false;
+
   try {
     const u = new URL(value);
-    if (u.protocol !== "https:" && u.protocol !== "http:") return false;
+
+    if (u.protocol !== "https:" && u.protocol !== "http:") {
+      return false;
+    }
+
     const host = u.hostname.toLowerCase();
+
     const allowed = [
-      "youtube.com", "www.youtube.com", "youtu.be",
-      "tiktok.com", "www.tiktok.com", "vm.tiktok.com", "vt.tiktok.com",
-      "instagram.com", "www.instagram.com",
-      "facebook.com", "www.facebook.com", "fb.watch",
-      "x.com", "www.x.com", "twitter.com", "www.twitter.com",
-      "reddit.com", "www.reddit.com", "redd.it"
+      "youtube.com",
+      "www.youtube.com",
+      "youtu.be",
+
+      "tiktok.com",
+      "www.tiktok.com",
+      "vm.tiktok.com",
+      "vt.tiktok.com",
+
+      "instagram.com",
+      "www.instagram.com",
+
+      "facebook.com",
+      "www.facebook.com",
+      "fb.watch",
+
+      "x.com",
+      "www.x.com",
+      "twitter.com",
+      "www.twitter.com",
+
+      "reddit.com",
+      "www.reddit.com",
+      "redd.it"
     ];
-    return allowed.some(h => host === h || host.endsWith("." + h));
+
+    return allowed.some(
+      h => host === h || host.endsWith("." + h)
+    );
   } catch {
     return false;
   }
@@ -45,22 +77,42 @@ function safeFilename(name: string, ext: string) {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 100);
+
   return `${clean || "LinkDrop_Media"}.${ext}`;
 }
 
 app.get("/", (_req, res) => {
-  res.json({ name: "LinkDrop API", status: "online" });
+  res.json({
+    name: "LinkDrop API",
+    status: "online"
+  });
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ status: "ok", service: "linkdrop-backend", time: new Date().toISOString() });
+  res.json({
+    status: "ok",
+    service: "linkdrop-backend",
+    time: new Date().toISOString()
+  });
 });
+
+
+/* =========================================================
+   ANALYZE
+   ========================================================= */
 
 app.post("/api/analyze", (req, res) => {
   const url = req.body?.url;
+
   if (!validPublicUrl(url)) {
-    return res.status(400).json({ success: false, message: "URL publik yang didukung diperlukan." });
+    return res.status(400).json({
+      success: false,
+      message: "URL publik yang didukung diperlukan."
+    });
   }
+
+  console.log("[ANALYZE] Starting yt-dlp");
+  console.log("[ANALYZE] URL:", url);
 
   const p = spawn("yt-dlp", [
     "--dump-single-json",
@@ -68,26 +120,80 @@ app.post("/api/analyze", (req, res) => {
     "--no-warnings",
     "--no-playlist",
     url
-  ], { shell: false });
+  ], {
+    shell: false
+  });
 
   let out = "";
   let err = "";
-  const timer = setTimeout(() => p.kill("SIGKILL"), 25_000);
+  let timedOut = false;
 
-  p.stdout.on("data", d => { out += d.toString(); });
-  p.stderr.on("data", d => { err += d.toString(); });
+  const timer = setTimeout(() => {
+    timedOut = true;
+
+    console.error("[ANALYZE] TIMEOUT after 25 seconds");
+
+    p.kill("SIGKILL");
+  }, 25_000);
+
+  p.stdout.on("data", d => {
+    out += d.toString();
+  });
+
+  p.stderr.on("data", d => {
+    err += d.toString();
+
+    // Simpan hanya bagian akhir agar log tidak terlalu besar
+    if (err.length > 8000) {
+      err = err.slice(-8000);
+    }
+  });
+
+  p.on("error", error => {
+    clearTimeout(timer);
+
+    console.error("[ANALYZE] SPAWN ERROR:", error);
+
+    if (!res.headersSent) {
+      return res.status(502).json({
+        success: false,
+        message: "yt-dlp tidak dapat dijalankan di server."
+      });
+    }
+  });
 
   p.on("close", code => {
     clearTimeout(timer);
+
+    console.log("[ANALYZE] yt-dlp exit code:", code);
+
+    if (err.trim()) {
+      console.error("[ANALYZE] yt-dlp stderr:");
+      console.error(err);
+    }
+
+    if (timedOut) {
+      return res.status(504).json({
+        success: false,
+        message: "Proses analisis terlalu lama."
+      });
+    }
+
     if (code !== 0) {
       return res.status(502).json({
         success: false,
-        message: "Media tidak tersedia atau platform menolak permintaan."
+        message: "Media tidak tersedia atau platform menolak permintaan.",
+        debug: process.env.NODE_ENV === "development"
+          ? err.slice(-2000)
+          : undefined
       });
     }
 
     try {
       const meta = JSON.parse(out);
+
+      console.log("[ANALYZE] Success:", meta.title);
+
       return res.json({
         success: true,
         title: meta.title || "Media LinkDrop",
@@ -95,21 +201,192 @@ app.post("/api/analyze", (req, res) => {
         uploader: meta.uploader || "Publik",
         duration: meta.duration || 0,
         formats: [
-          { id: "best", label: "MP4 (Best Available)", extension: "mp4", quality: "best", type: "video" },
-          { id: "audio", label: "MP3 (Audio)", extension: "mp3", quality: "best", type: "audio" }
+          {
+            id: "best",
+            label: "MP4 (Best Available)",
+            extension: "mp4",
+            quality: "best",
+            type: "video"
+          },
+          {
+            id: "audio",
+            label: "MP3 (Audio)",
+            extension: "mp3",
+            quality: "best",
+            type: "audio"
+          }
         ]
       });
-    } catch {
-      return res.status(502).json({ success: false, message: "Gagal membaca metadata media." });
+
+    } catch (error) {
+      console.error("[ANALYZE] JSON parse error:", error);
+      console.error("[ANALYZE] Raw output:", out.slice(-4000));
+
+      return res.status(502).json({
+        success: false,
+        message: "Gagal membaca metadata media."
+      });
     }
   });
 });
 
+
+/* =========================================================
+   DOWNLOAD
+   ========================================================= */
+
 app.post("/api/download", (req, res) => {
   const { url, formatId } = req.body ?? {};
+
   if (!validPublicUrl(url)) {
-    return res.status(400).json({ success: false, message: "URL publik yang didukung diperlukan." });
+    return res.status(400).json({
+      success: false,
+      message: "URL publik yang didukung diperlukan."
+    });
   }
+
+  const audio = formatId === "audio";
+
+  const ext = audio ? "mp3" : "mp4";
+
+  const format = audio
+    ? "bestaudio/best"
+    : "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+
+  console.log("[DOWNLOAD] Starting yt-dlp");
+  console.log("[DOWNLOAD] URL:", url);
+  console.log("[DOWNLOAD] Format:", format);
+
+  const p = spawn("yt-dlp", [
+    "--no-playlist",
+    "--no-warnings",
+    "--newline",
+    "--restrict-filenames",
+
+    "-f",
+    format,
+
+    ...(audio
+      ? [
+          "--extract-audio",
+          "--audio-format",
+          "mp3"
+        ]
+      : [
+          "--merge-output-format",
+          "mp4"
+        ]),
+
+    "-o",
+    "-",
+
+    url
+  ], {
+    shell: false
+  });
+
+  res.statusCode = 200;
+
+  res.setHeader(
+    "Content-Type",
+    audio
+      ? "audio/mpeg"
+      : "video/mp4"
+  );
+
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${safeFilename("LinkDrop_Media", ext)}"`
+  );
+
+  let started = false;
+  let stderr = "";
+  let timedOut = false;
+
+  p.stdout.on("data", chunk => {
+    started = true;
+    res.write(chunk);
+  });
+
+  p.stderr.on("data", d => {
+    stderr += d.toString();
+
+    if (stderr.length > 8000) {
+      stderr = stderr.slice(-8000);
+    }
+  });
+
+  p.on("error", error => {
+    console.error("[DOWNLOAD] SPAWN ERROR:", error);
+
+    if (!started && !res.headersSent) {
+      return res.status(502).json({
+        success: false,
+        message: "yt-dlp tidak dapat dijalankan di server."
+      });
+    }
+  });
+
+  const timer = setTimeout(() => {
+    timedOut = true;
+
+    console.error("[DOWNLOAD] TIMEOUT after 240 seconds");
+
+    p.kill("SIGKILL");
+  }, 240_000);
+
+  p.on("close", code => {
+    clearTimeout(timer);
+
+    console.log("[DOWNLOAD] yt-dlp exit code:", code);
+
+    if (stderr.trim()) {
+      console.error("[DOWNLOAD] yt-dlp stderr:");
+      console.error(stderr);
+    }
+
+    if (timedOut) {
+      if (!res.writableEnded) {
+        res.end();
+      }
+      return;
+    }
+
+    if (!started && code !== 0) {
+      if (!res.headersSent) {
+        return res.status(502).json({
+          success: false,
+          message: "Gagal memproses file media."
+        });
+      }
+
+      if (!res.writableEnded) {
+        res.end();
+      }
+
+      return;
+    }
+
+    if (!res.writableEnded) {
+      res.end();
+    }
+  });
+
+  req.on("close", () => {
+    if (!res.writableEnded) {
+      p.kill("SIGTERM");
+    }
+  });
+});
+
+
+/* =========================================================
+   SERVER
+   ========================================================= */
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`LinkDrop API listening on ${PORT}`);
+});  }
 
   const audio = formatId === "audio";
   const ext = audio ? "mp3" : "mp4";

@@ -211,17 +211,18 @@ async function extractInstagramWithPlaywright(targetUrl: string): Promise<{
 
   try {
     browser = await chromium.launch({
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-      ],
-    });
+  executablePath: process.env.CHROMIUM_PATH || '/usr/bin/chromium',
+  headless: true,
+  args: [
+    '--no-sandbox',
+    '--disable-setuid-sandbox',
+    '--disable-dev-shm-usage',
+    '--disable-accelerated-2d-canvas',
+    '--no-first-run',
+    '--no-zygote',
+    '--disable-gpu',
+  ],
+});
 
     const context = await browser.newContext({
       userAgent:

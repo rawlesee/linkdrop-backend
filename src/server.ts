@@ -1128,6 +1128,8 @@ app.post(
          * Foto / carousel:
          * gunakan Apify.
          */
+        console.log("APIFY START", rawUrl);
+        
         const apify =
           await extractInstagramWithApify(
             rawUrl

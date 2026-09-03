@@ -16,7 +16,11 @@ import crypto from 'crypto';
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
+/* =========================================================
+   CONFIG
+   ========================================================= */
+
+const PORT = Number(process.env.PORT) || 3000;
 
 const MAX_FILE_SIZE_MB = parseInt(
   process.env.MAX_FILE_SIZE_MB || '500',
@@ -461,10 +465,12 @@ async function extractInstagramSinglePhoto(
     }
 
     /*
-     * gallery-dl Message.Url = 3
+     * gallery-dl:
      *
-     * Directory = 2
-     * URL/media = 3
+     * Message.Directory = 2
+     * Message.Url       = 3
+     *
+     * Media URL ada pada entry[1].
      */
 
     const mediaEntries = entries.filter(
@@ -488,7 +494,8 @@ async function extractInstagramSinglePhoto(
     }
 
     /*
-     * Lebih dari satu media URL = carousel.
+     * Lebih dari satu media URL =
+     * Instagram Carousel.
      */
 
     if (mediaEntries.length > 1) {
@@ -584,6 +591,11 @@ async function extractInstagramSinglePhoto(
       }
     }
 
+    /*
+     * Kalau media ternyata video,
+     * biarkan yt-dlp yang menangani.
+     */
+
     if (
       typename === 'GraphVideo' ||
       /\.mp4(?:$|\?)/i.test(
@@ -617,12 +629,15 @@ async function extractInstagramSinglePhoto(
 
     return {
       isSinglePhoto: true,
+
       title:
         description
           .substring(0, 50)
           .trim() ||
         'Instagram Photo',
+
       photoUrl: directMediaUrl,
+
       ext: extension
         .replace(
           /[^a-zA-Z0-9]/g,
@@ -660,8 +675,8 @@ app.get(
   ): void => {
     res.json({
       status: 'ok',
-      timestamp:
-        new Date().toISOString(),
+      service: 'linkdrop-backend',
+      time: new Date().toISOString(),
       activeDownloads:
         activeDownloadsCount,
     });
@@ -727,14 +742,16 @@ app.get(
           'gallery-dl -j --no-download <URL>',
         exitCode: result.code,
         timedOut: false,
-        stdout: result.stdout.substring(
-          0,
-          12000
-        ),
-        stderr: result.stderr.substring(
-          0,
-          6000
-        ),
+        stdout:
+          result.stdout.substring(
+            0,
+            12000
+          ),
+        stderr:
+          result.stderr.substring(
+            0,
+            6000
+          ),
       });
     } catch (err: unknown) {
       if (
@@ -1025,14 +1042,18 @@ app.get(
           {
             method: 'GET',
             redirect: 'follow',
+
             headers: {
               'User-Agent':
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+
               Accept:
                 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+
               'Accept-Language':
                 'en-US,en;q=0.9',
             },
+
             signal:
               controller.signal,
           }
@@ -1058,10 +1079,14 @@ app.get(
 
       tests.push({
         name: 'direct-http',
+
         status:
           httpResponse.status,
+
         finalUrl,
+
         contentType,
+
         redirectedToLogin,
       });
     } catch (err: unknown) {
@@ -1072,11 +1097,16 @@ app.get(
 
       tests.push({
         name: 'direct-http',
+
         status: 0,
+
         finalUrl: '',
+
         contentType: '',
+
         redirectedToLogin:
           false,
+
         error: truncate(
           message,
           2048
@@ -1132,7 +1162,9 @@ app.post(
       return;
     }
 
-    /* Instagram Photo */
+    /* =====================================================
+       INSTAGRAM PHOTO
+       ===================================================== */
 
     if (
       safety.platform ===
@@ -1154,16 +1186,22 @@ app.post(
       ) {
         res.json({
           success: true,
+
           platform:
             'instagram',
+
           type: 'image',
+
           title:
             photoResult.title ||
             'Foto Instagram',
+
           thumbnail:
             photoResult.photoUrl,
+
           uploader:
             'Instagram User',
+
           items: [
             {
               index: 0,
@@ -1175,6 +1213,7 @@ app.post(
                 'jpg',
             },
           ],
+
           url,
         });
 
@@ -1205,7 +1244,9 @@ app.post(
       }
     }
 
-    /* Video Pipeline */
+    /* =====================================================
+       VIDEO PIPELINE
+       ===================================================== */
 
     try {
       console.log(
@@ -1242,6 +1283,7 @@ app.post(
           quality: 'HD',
           type: 'video',
         },
+
         {
           id: 'audio',
           label:
@@ -1255,21 +1297,29 @@ app.post(
 
       res.json({
         success: true,
+
         platform:
           safety.platform,
+
         type: 'video',
+
         title:
           meta.title ||
           'LinkDrop Video',
+
         thumbnail:
           meta.thumbnail || '',
+
         uploader:
           meta.uploader ||
           meta.channel ||
           'Publik',
+
         duration:
           meta.duration || 0,
+
         url,
+
         formats,
       });
     } catch (err: unknown) {
@@ -1404,10 +1454,13 @@ app.post(
         '--no-check-certificates',
         '--max-filesize',
         `${MAX_FILE_SIZE_MB}m`,
+
         '-f',
+
         isAudio
           ? 'bestaudio/best'
           : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+
         '-o',
         tempOutputTemplate,
       ];
@@ -1585,7 +1638,9 @@ app.post(
 
     let targetImageUrl = '';
 
-    /* Re-extract from original Instagram URL */
+    /* -----------------------------------------------------
+       Re-extract dari URL Instagram asli
+       ----------------------------------------------------- */
 
     if (
       url &&
@@ -1616,7 +1671,9 @@ app.post(
       }
     }
 
-    /* Fallback image URL */
+    /* -----------------------------------------------------
+       Fallback image URL
+       ----------------------------------------------------- */
 
     if (
       !targetImageUrl &&
@@ -1666,6 +1723,10 @@ app.post(
       return;
     }
 
+    /* -----------------------------------------------------
+       Download image
+       ----------------------------------------------------- */
+
     try {
       console.log(
         '[Download Image] Mengunduh gambar...'
@@ -1687,9 +1748,11 @@ app.post(
             headers: {
               'User-Agent':
                 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+
               Accept:
                 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
             },
+
             signal:
               controller.signal,
           }

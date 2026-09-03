@@ -76,15 +76,16 @@ interface InstagramResult {
   error?: string;
 }
 
-const AnalyzeSchema =
-  z.object({
-    url: z.string().url(),
-  });
+const AnalyzeSchema = z.object({
+  url: z.string().url(),
+});
 
-const DownloadSchema =
-  z.object({
-    url: z.string().url(),
-  });
+const DownloadSchema = z.object({
+  url: z.string().url(),
+  format: z
+    .enum(["mp4", "mp3"])
+    .default("mp4"),
+});
 
 /* =========================
    INSTAGRAM HELPERS
@@ -97,10 +98,8 @@ function isInstagramUrl(
     const u = new URL(rawUrl);
 
     return (
-      u.hostname ===
-        "instagram.com" ||
-      u.hostname ===
-        "www.instagram.com"
+      u.hostname === "instagram.com" ||
+      u.hostname === "www.instagram.com"
     );
   } catch {
     return false;
@@ -129,15 +128,9 @@ function isAllowedInstagramMediaUrl(
       u.hostname.toLowerCase();
 
     return (
-      host.endsWith(
-        "cdninstagram.com"
-      ) ||
-      host.endsWith(
-        "fbcdn.net"
-      ) ||
-      host.endsWith(
-        "instagram.com"
-      )
+      host.endsWith("cdninstagram.com") ||
+      host.endsWith("fbcdn.net") ||
+      host.endsWith("instagram.com")
     );
   } catch {
     return false;
@@ -1458,18 +1451,75 @@ async function downloadInstagramWithApify(
     );
   }
 
+  const beginning =
+    buffer
+      .subarray(
+        0,
+        200
+      )
+      .toString(
+        "utf8"
+      )
+      .toLowerCase();
+
+  if (
+    beginning.includes(
+      "<html"
+    ) ||
+    beginning.includes(
+      "<!doctype"
+    )
+  ) {
+    throw new Error(
+      "Respons Apify adalah HTML, bukan media."
+    );
+  }
+
+  let extension =
+    "jpg";
+
+  if (
+    contentType.includes(
+      "png"
+    )
+  ) {
+    extension =
+      "png";
+  } else if (
+    contentType.includes(
+      "webp"
+    )
+  ) {
+    extension =
+      "webp";
+  } else if (
+    contentType.includes(
+      "gif"
+    )
+  ) {
+    extension =
+      "gif";
+  } else if (
+    contentType.includes(
+      "avif"
+    )
+  ) {
+    extension =
+      "avif";
+  } else if (
+    contentType.startsWith(
+      "video/"
+    )
+  ) {
+    extension =
+      "mp4";
+  }
+
   let filename =
     record.filename ||
     `Letsedrop_Instagram_${
       itemIndex + 1
-    }.${
-      String(
-        record.type || ""
-      ).toLowerCase() ===
-      "video"
-        ? "mp4"
-        : "jpg"
-    }`;
+    }.${extension}`;
 
   filename =
     safeFilename(
@@ -1510,9 +1560,9 @@ async function runYtDlp(
     "yt-dlp",
     args,
     {
-      timeout: 120000,
+      timeout: 180000,
       maxBuffer:
-        10 * 1024 * 1024,
+        20 * 1024 * 1024,
     }
   );
 }
@@ -2116,7 +2166,7 @@ app.get(
 );
 
 /* =========================
-   DEBUG YT-DLP INSTAGRAM
+   DEBUG YT-DLP
 ========================= */
 
 app.get(
@@ -2297,10 +2347,22 @@ app.post(
           apify.items.length >
             0
         ) {
+          const hasVideo =
+            apify.items.some(
+              (item: ExtractedMediaItem) =>
+                item.type ===
+                "video"
+            );
+
           return res.json({
             success: true,
 
-            type: "image",
+            type:
+              hasVideo &&
+              apify.items.length ===
+                1
+                ? "video"
+                : "image",
 
             url:
               apify.url,
@@ -2329,7 +2391,10 @@ app.post(
           return res.json({
             success: true,
 
-            type: "image",
+            type:
+              instagram.isVideoPost
+                ? "video"
+                : "image",
 
             url:
               instagram.url,
@@ -2351,92 +2416,74 @@ app.post(
         }
 
         try {
-          const tempDir =
-            await fs.mkdtemp(
-              path.join(
-                os.tmpdir(),
-                "letsedrop-"
-              )
-            );
-
-          try {
-            const info =
-              await execFileAsync(
-                "yt-dlp",
-                [
-                  "--dump-single-json",
-                  "--no-playlist",
-                  "--no-warnings",
-                  rawUrl,
-                ],
-                {
-                  timeout: 60000,
-                  maxBuffer:
-                    10 *
-                    1024 *
-                    1024,
-                }
-              );
-
-            const data =
-              JSON.parse(
-                info.stdout
-              );
-
-            const isImage =
-              data.ext ===
-                "jpg" ||
-              data.ext ===
-                "jpeg" ||
-              data.ext ===
-                "png";
-
-            return res.json({
-              success: true,
-
-              type: isImage
-                ? "image"
-                : "video",
-
-              url: rawUrl,
-
-              title:
-                data.title ||
-                "Instagram",
-
-              thumbnail:
-                data.thumbnail ||
-                "",
-
-              itemCount: 1,
-
-              items: [
-                {
-                  index: 0,
-
-                  type: isImage
-                    ? "image"
-                    : "video",
-
-                  url:
-                    data.url ||
-                    rawUrl,
-
-                  thumbnail:
-                    data.thumbnail ||
-                    undefined,
-                },
+          const info =
+            await execFileAsync(
+              "yt-dlp",
+              [
+                "--dump-single-json",
+                "--no-playlist",
+                "--no-warnings",
+                rawUrl,
               ],
-            });
-          } finally {
-            await fs.rm(
-              tempDir,
               {
-                recursive: true,
-                force: true,
+                timeout: 60000,
+                maxBuffer:
+                  10 *
+                  1024 *
+                  1024,
               }
             );
-          }
+
+          const data =
+            JSON.parse(
+              info.stdout
+            );
+
+          const isImage =
+            data.ext ===
+              "jpg" ||
+            data.ext ===
+              "jpeg" ||
+            data.ext ===
+              "png";
+
+          return res.json({
+            success: true,
+
+            type: isImage
+              ? "image"
+              : "video",
+
+            url: rawUrl,
+
+            title:
+              data.title ||
+              "Instagram",
+
+            thumbnail:
+              data.thumbnail ||
+              "",
+
+            itemCount: 1,
+
+            items: [
+              {
+                index: 0,
+
+                type: isImage
+                  ? "image"
+                  : "video",
+
+                url:
+                  data.webpage_url ||
+                  rawUrl,
+
+                thumbnail:
+                  data.thumbnail ||
+                  undefined,
+              },
+            ],
+          });
         } catch {}
 
         return res.status(422).json({
@@ -2540,7 +2587,7 @@ app.post(
 );
 
 /* =========================
-   DOWNLOAD VIDEO
+   DOWNLOAD VIDEO / AUDIO
 ========================= */
 
 app.post(
@@ -2556,6 +2603,30 @@ app.post(
           req.body
         );
 
+      const {
+        url,
+        format,
+      } = parsed;
+
+      /*
+       * Instagram carousel/image:
+       * tetap gunakan downloader khusus.
+       */
+
+      if (
+        isInstagramUrl(url) &&
+        format === "mp4"
+      ) {
+        /*
+         * Kalau Instagram post adalah
+         * video tunggal, yt-dlp tetap
+         * menangani download videonya.
+         *
+         * Carousel foto tidak dipaksa
+         * menjadi MP4.
+         */
+      }
+
       tempDir =
         await fs.mkdtemp(
           path.join(
@@ -2564,10 +2635,87 @@ app.post(
           )
         );
 
-      await runYtDlp(
-        parsed.url,
-        tempDir
-      );
+      const outputTemplate =
+        path.join(
+          tempDir,
+          "%(title).100B-%(id)s.%(ext)s"
+        );
+
+      /*
+       * =========================
+       * MP3
+       * =========================
+       */
+
+      if (
+        format === "mp3"
+      ) {
+        await execFileAsync(
+          "yt-dlp",
+          [
+            "--no-playlist",
+            "--no-warnings",
+            "--restrict-filenames",
+
+            "-x",
+
+            "--audio-format",
+            "mp3",
+
+            "--audio-quality",
+            "0",
+
+            "-o",
+            outputTemplate,
+
+            url,
+          ],
+          {
+            timeout: 180000,
+            maxBuffer:
+              20 * 1024 * 1024,
+          }
+        );
+      }
+
+      /*
+       * =========================
+       * MP4
+       * =========================
+       */
+
+      else {
+        await execFileAsync(
+          "yt-dlp",
+          [
+            "--no-playlist",
+            "--no-warnings",
+            "--restrict-filenames",
+
+            "-f",
+            "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/best",
+
+            "--merge-output-format",
+            "mp4",
+
+            "-o",
+            outputTemplate,
+
+            url,
+          ],
+          {
+            timeout: 180000,
+            maxBuffer:
+              20 * 1024 * 1024,
+          }
+        );
+      }
+
+      /*
+       * =========================
+       * CARI FILE HASIL
+       * =========================
+       */
 
       const files =
         await fs.readdir(
@@ -2582,6 +2730,9 @@ app.post(
             ) &&
             !file.endsWith(
               ".ytdl"
+            ) &&
+            !file.endsWith(
+              ".temp"
             )
         );
 
@@ -2593,7 +2744,21 @@ app.post(
         );
       }
 
-      const filename =
+      let filename =
+        mediaFiles.find(
+          (file) =>
+            format === "mp3"
+              ? file
+                  .toLowerCase()
+                  .endsWith(
+                    ".mp3"
+                  )
+              : file
+                  .toLowerCase()
+                  .endsWith(
+                    ".mp4"
+                  )
+        ) ||
         mediaFiles[0];
 
       const filePath =
@@ -2607,6 +2772,16 @@ app.post(
           filePath
         );
 
+      const contentType =
+        format === "mp3"
+          ? "audio/mpeg"
+          : "video/mp4";
+
+      res.setHeader(
+        "Content-Type",
+        contentType
+      );
+
       res.setHeader(
         "Content-Length",
         stat.size
@@ -2619,6 +2794,22 @@ app.post(
         )}"`
       );
 
+      res.setHeader(
+        "Cache-Control",
+        "no-store"
+      );
+
+      console.log(
+        "DOWNLOAD SUCCESS",
+        {
+          url,
+          format,
+          filename,
+          size:
+            stat.size,
+        }
+      );
+
       res.sendFile(
         filePath,
         async () => {
@@ -2629,6 +2820,8 @@ app.post(
                 recursive: true,
                 force: true,
               }
+            ).catch(
+              () => {}
             );
           }
         }
@@ -2636,6 +2829,16 @@ app.post(
 
       return;
     } catch (error: any) {
+      console.error(
+        "DOWNLOAD ERROR:",
+        {
+          message:
+            error?.message,
+          stderr:
+            error?.stderr,
+        }
+      );
+
       if (tempDir) {
         await fs.rm(
           tempDir,
@@ -2643,7 +2846,9 @@ app.post(
             recursive: true,
             force: true,
           }
-        ).catch(() => {});
+        ).catch(
+          () => {}
+        );
       }
 
       return res.status(500).json({
@@ -2680,6 +2885,7 @@ app.post(
 
             itemIndex:
               z
+                .coerce
                 .number()
                 .int()
                 .min(0)
@@ -2691,10 +2897,6 @@ app.post(
           })
           .parse(req.body);
 
-      /*
-       * Kalau itemIndex diberikan,
-       * gunakan Apify downloader.
-       */
       if (
         typeof body.itemIndex ===
         "number"
@@ -2732,11 +2934,6 @@ app.post(
         );
       }
 
-      /*
-       * Backward compatibility:
-       * request lama tetap menggunakan
-       * downloader CDN.
-       */
       const result =
         await downloadRemoteInstagramMedia(
           body.url
@@ -2863,12 +3060,6 @@ app.post(
                     1
                 ),
 
-            /*
-             * Tetap diterima supaya
-             * App.tsx lama tidak error.
-             * Backend TIDAK menggunakan
-             * imageUrl untuk download.
-             */
             imageUrl:
               z.string().url().optional(),
           })
@@ -2900,16 +3091,6 @@ app.post(
         }
       );
 
-      /*
-       * PENTING:
-       *
-       * Jangan download body.imageUrl.
-       *
-       * imageUrl adalah URL CDN hasil scraper
-       * dan bisa expired / mengembalikan HTML.
-       *
-       * Gunakan URL post asli + index.
-       */
       const result =
         await downloadInstagramWithApify(
           body.url,

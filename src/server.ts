@@ -15,6 +15,8 @@ const execFileAsync = promisify(execFile);
 
 const app = express();
 
+app.set("trust proxy", 1);
+
 app.use(helmet());
 
 app.use(
@@ -57,6 +59,10 @@ interface ExtractedMediaItem {
   type: MediaType;
   url: string;
   thumbnail?: string;
+  index?: number;
+  ext?: string;
+  width?: number;
+  height?: number;
 }
 
 interface InstagramResult {
@@ -818,10 +824,17 @@ async function extractInstagramWithPlaywright(
     const finalItems =
       uniqueMedia(
         items
-      ).slice(
-        0,
-        MAX_INSTAGRAM_CAROUSEL_ITEMS
-      );
+      )
+        .slice(
+          0,
+          MAX_INSTAGRAM_CAROUSEL_ITEMS
+        )
+        .map(
+          (item, index) => ({
+            ...item,
+            index,
+          })
+        );
 
     if (
       !finalItems.length
@@ -841,6 +854,12 @@ async function extractInstagramWithPlaywright(
           .slice(
             0,
             MAX_INSTAGRAM_CAROUSEL_ITEMS
+          )
+          .map(
+            (item, index) => ({
+              ...item,
+              index,
+            })
           );
 
       if (
@@ -948,7 +967,7 @@ async function extractInstagramWithPlaywright(
 }
 
 /* =========================
-   APIFY INSTAGRAM
+   APIFY INSTAGRAM SCRAPER
 ========================= */
 
 async function extractInstagramWithApify(
@@ -1051,7 +1070,10 @@ async function extractInstagramWithApify(
       ExtractedMediaItem[] =
       mediaItems
         .map(
-          (item: any) => {
+          (
+            item: any,
+            index: number
+          ) => {
             const mediaUrl =
               typeof item.url ===
               "string"
@@ -1062,14 +1084,18 @@ async function extractInstagramWithApify(
               return null;
             }
 
+            const isVideo =
+              String(
+                item.type
+              ).toLowerCase() ===
+              "video";
+
             return {
-              type:
-                String(
-                  item.type
-                ).toLowerCase() ===
-                "video"
-                  ? "video"
-                  : "image",
+              index,
+
+              type: isVideo
+                ? "video"
+                : "image",
 
               url: mediaUrl,
 
@@ -1078,6 +1104,22 @@ async function extractInstagramWithApify(
                 "string"
                   ? item.thumbnail_url
                   : mediaUrl,
+
+              ext: isVideo
+                ? "mp4"
+                : "jpg",
+
+              width:
+                typeof item.width ===
+                "number"
+                  ? item.width
+                  : undefined,
+
+              height:
+                typeof item.height ===
+                "number"
+                  ? item.height
+                  : undefined,
             } as ExtractedMediaItem;
           }
         )
@@ -1121,6 +1163,324 @@ async function extractInstagramWithApify(
         "Gagal mengambil Instagram dari Apify.",
     };
   }
+}
+
+/* =========================
+   APIFY INSTAGRAM DOWNLOADER
+========================= */
+
+interface ApifyDownloadedMedia {
+  filename?: string;
+  post_url?: string;
+  type?: string;
+  download_status?: string;
+  storage_key?: string;
+  download_url?: string;
+}
+
+const instagramDownloadCache =
+  new Map<
+    string,
+    {
+      expiresAt: number;
+      records: ApifyDownloadedMedia[];
+    }
+  >();
+
+const instagramDownloadInflight =
+  new Map<
+    string,
+    Promise<ApifyDownloadedMedia[]>
+  >();
+
+async function getInstagramDownloadedMedia(
+  rawUrl: string
+): Promise<ApifyDownloadedMedia[]> {
+  const token =
+    process.env.APIFY_API_TOKEN;
+
+  if (!token) {
+    throw new Error(
+      "APIFY_API_TOKEN belum dikonfigurasi."
+    );
+  }
+
+  const postUrl =
+    cleanInstagramUrl(
+      rawUrl
+    );
+
+  const cached =
+    instagramDownloadCache.get(
+      postUrl
+    );
+
+  if (
+    cached &&
+    cached.expiresAt >
+      Date.now()
+  ) {
+    return cached.records;
+  }
+
+  if (cached) {
+    instagramDownloadCache.delete(
+      postUrl
+    );
+  }
+
+  const existingRequest =
+    instagramDownloadInflight.get(
+      postUrl
+    );
+
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const request =
+    (async () => {
+      const endpoint =
+        "https://api.apify.com/v2/actors/" +
+        "crawlerbros~instagram-downloader-api/" +
+        "run-sync-get-dataset-items" +
+        `?token=${encodeURIComponent(
+          token
+        )}`;
+
+      const response =
+        await fetch(
+          endpoint,
+          {
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify({
+              postUrls: [
+                postUrl,
+              ],
+            }),
+
+            signal:
+              AbortSignal.timeout(
+                120000
+              ),
+          }
+        );
+
+      const text =
+        await response.text();
+
+      if (!response.ok) {
+        console.error(
+          "APIFY DOWNLOADER ERROR:",
+          response.status,
+          text.slice(0, 1000)
+        );
+
+        throw new Error(
+          `Apify downloader gagal (${response.status}).`
+        );
+      }
+
+      let data: unknown;
+
+      try {
+        data =
+          JSON.parse(text);
+      } catch {
+        console.error(
+          "APIFY DOWNLOADER INVALID JSON:",
+          text.slice(0, 1000)
+        );
+
+        throw new Error(
+          "Respons Apify downloader tidak valid."
+        );
+      }
+
+      if (
+        !Array.isArray(data) ||
+        data.length === 0
+      ) {
+        throw new Error(
+          "Apify tidak mengembalikan media Instagram."
+        );
+      }
+
+      const records =
+        data.filter(
+          (item: any) =>
+            item &&
+            item.download_status ===
+              "finished" &&
+            typeof item.download_url ===
+              "string" &&
+            item.download_url.length >
+              0
+        ) as ApifyDownloadedMedia[];
+
+      if (!records.length) {
+        throw new Error(
+          "Media Instagram berhasil diproses, tetapi file download tidak tersedia."
+        );
+      }
+
+      instagramDownloadCache.set(
+        postUrl,
+        {
+          expiresAt:
+            Date.now() +
+            2 * 60 * 1000,
+
+          records,
+        }
+      );
+
+      return records;
+    })();
+
+  instagramDownloadInflight.set(
+    postUrl,
+    request
+  );
+
+  try {
+    return await request;
+  } finally {
+    instagramDownloadInflight.delete(
+      postUrl
+    );
+  }
+}
+
+async function downloadInstagramWithApify(
+  rawUrl: string,
+  itemIndex: number
+): Promise<{
+  buffer: Buffer;
+  contentType: string;
+  filename: string;
+}> {
+  const records =
+    await getInstagramDownloadedMedia(
+      rawUrl
+    );
+
+  if (
+    itemIndex < 0 ||
+    itemIndex >= records.length
+  ) {
+    throw new Error(
+      `Media Instagram #${
+        itemIndex + 1
+      } tidak ditemukan.`
+    );
+  }
+
+  const record =
+    records[itemIndex];
+
+  if (
+    !record.download_url
+  ) {
+    throw new Error(
+      "URL file hasil download Instagram tidak tersedia."
+    );
+  }
+
+  const fileResponse =
+    await fetch(
+      record.download_url,
+      {
+        headers: {
+          Accept: "*/*",
+        },
+
+        signal:
+          AbortSignal.timeout(
+            120000
+          ),
+      }
+    );
+
+  if (
+    !fileResponse.ok
+  ) {
+    throw new Error(
+      `File Instagram dari Apify gagal diambil (${fileResponse.status}).`
+    );
+  }
+
+  const contentType =
+    (
+      fileResponse.headers.get(
+        "content-type"
+      ) || ""
+    )
+      .split(";")[0]
+      .trim()
+      .toLowerCase() ||
+    (
+      String(
+        record.type || ""
+      ).toLowerCase() ===
+      "video"
+        ? "video/mp4"
+        : "image/jpeg"
+    );
+
+  if (
+    contentType.includes(
+      "text/html"
+    )
+  ) {
+    throw new Error(
+      "Apify mengembalikan HTML, bukan file media."
+    );
+  }
+
+  const arrayBuffer =
+    await fileResponse.arrayBuffer();
+
+  const buffer =
+    Buffer.from(
+      arrayBuffer
+    );
+
+  if (!buffer.length) {
+    throw new Error(
+      "File Instagram dari Apify kosong."
+    );
+  }
+
+  let filename =
+    record.filename ||
+    `Letsedrop_Instagram_${
+      itemIndex + 1
+    }.${
+      String(
+        record.type || ""
+      ).toLowerCase() ===
+      "video"
+        ? "mp4"
+        : "jpg"
+    }`;
+
+  filename =
+    safeFilename(
+      filename
+    );
+
+  return {
+    buffer,
+    contentType,
+    filename,
+  };
 }
 
 /* =========================
@@ -1293,12 +1653,6 @@ print(json.dumps({
           ""
       );
 
-    /*
-     * Kalau CDN tidak memberikan
-     * content-type yang benar,
-     * deteksi berdasarkan magic bytes.
-     */
-
     if (
       !contentType ||
       contentType ===
@@ -1373,7 +1727,10 @@ async function downloadRemoteInstagramMedia(
   buffer: Buffer;
   contentType: string;
 }> {
-  const url = normalizeMediaUrl(rawUrl);
+  const url =
+    normalizeMediaUrl(
+      rawUrl
+    );
 
   if (!url) {
     throw new Error(
@@ -1381,24 +1738,19 @@ async function downloadRemoteInstagramMedia(
     );
   }
 
-  /*
-   * =====================================================
-   * METHOD 1
-   * curl_cffi + Chrome impersonation
-   * =====================================================
-   */
+  const tempDir =
+    await fs.mkdtemp(
+      path.join(
+        os.tmpdir(),
+        "letsedrop-instagram-"
+      )
+    );
 
-  const tempDir = await fs.mkdtemp(
+  const outputFile =
     path.join(
-      os.tmpdir(),
-      "letsedrop-instagram-"
-    )
-  );
-
-  const outputFile = path.join(
-    tempDir,
-    "media"
-  );
+      tempDir,
+      "media"
+    );
 
   try {
     const pythonScript = `
@@ -1511,11 +1863,6 @@ print(json.dumps({
           meta.contentType || ""
         ).toLowerCase();
 
-      /*
-       * Deteksi berdasarkan file signature
-       * kalau CDN tidak memberikan MIME type.
-       */
-
       if (
         !contentType ||
         contentType ===
@@ -1588,13 +1935,6 @@ print(json.dumps({
           curlError
       );
     }
-
-    /*
-     * =====================================================
-     * METHOD 2
-     * Native Node fetch
-     * =====================================================
-     */
 
     const response =
       await fetch(url, {
@@ -1671,11 +2011,6 @@ print(json.dumps({
       );
     }
 
-    /*
-     * Jangan pernah mengirim HTML
-     * sebagai gambar.
-     */
-
     const beginning =
       buffer
         .subarray(
@@ -1716,6 +2051,7 @@ print(json.dumps({
     ).catch(() => {});
   }
 }
+
 /* =========================
    HEALTH
 ========================= */
@@ -1891,33 +2227,16 @@ app.post(
       const rawUrl =
         parsed.url.trim();
 
-      /*
-       * =====================
-       * INSTAGRAM
-       * =====================
-       */
-
       if (
         isInstagramUrl(
           rawUrl
         )
       ) {
-        /*
-         * Pertama tetap coba
-         * Playwright.
-         *
-         * Ini mempertahankan
-         * behavior video lama.
-         */
         const instagram =
           await extractInstagramWithPlaywright(
             rawUrl
           );
 
-        /*
-         * Single video:
-         * behavior lama.
-         */
         if (
           instagram.success &&
           instagram.isVideoPost &&
@@ -1940,11 +2259,6 @@ app.post(
               instagram.items,
           });
         }
-
-        /*
-         * Foto / carousel:
-         * gunakan Apify.
-         */
 
         console.log(
           "APIFY START",
@@ -2007,12 +2321,6 @@ app.post(
           });
         }
 
-        /*
-         * Kalau Apify gagal,
-         * gunakan hasil Playwright
-         * jika tersedia.
-         */
-
         if (
           instagram.success &&
           instagram.items.length >
@@ -2041,11 +2349,6 @@ app.post(
               instagram.items,
           });
         }
-
-        /*
-         * Fallback terakhir:
-         * yt-dlp.
-         */
 
         try {
           const tempDir =
@@ -2109,6 +2412,8 @@ app.post(
 
               items: [
                 {
+                  index: 0,
+
                   type: isImage
                     ? "image"
                     : "video",
@@ -2143,12 +2448,6 @@ app.post(
             "Postingan Instagram tidak ditemukan.",
         });
       }
-
-      /*
-       * =====================
-       * NON-INSTAGRAM
-       * =====================
-       */
 
       try {
         const info =
@@ -2193,6 +2492,8 @@ app.post(
 
           items: [
             {
+              index: 0,
+
               type: "video",
 
               url:
@@ -2358,7 +2659,7 @@ app.post(
 );
 
 /* =========================
-   DOWNLOAD INSTAGRAM MEDIA
+   DOWNLOAD INSTAGRAM CAROUSEL
 ========================= */
 
 app.post(
@@ -2376,9 +2677,66 @@ app.post(
                 "image",
                 "video",
               ]),
+
+            itemIndex:
+              z
+                .number()
+                .int()
+                .min(0)
+                .max(
+                  MAX_INSTAGRAM_CAROUSEL_ITEMS -
+                    1
+                )
+                .optional(),
           })
           .parse(req.body);
 
+      /*
+       * Kalau itemIndex diberikan,
+       * gunakan Apify downloader.
+       */
+      if (
+        typeof body.itemIndex ===
+        "number"
+      ) {
+        const result =
+          await downloadInstagramWithApify(
+            body.url,
+            body.itemIndex
+          );
+
+        res.setHeader(
+          "Content-Type",
+          result.contentType
+        );
+
+        res.setHeader(
+          "Content-Length",
+          result.buffer.length
+        );
+
+        res.setHeader(
+          "Content-Disposition",
+          `attachment; filename="${safeFilename(
+            result.filename
+          )}"`
+        );
+
+        res.setHeader(
+          "Cache-Control",
+          "no-store"
+        );
+
+        return res.send(
+          result.buffer
+        );
+      }
+
+      /*
+       * Backward compatibility:
+       * request lama tetap menggunakan
+       * downloader CDN.
+       */
       const result =
         await downloadRemoteInstagramMedia(
           body.url
@@ -2460,7 +2818,7 @@ app.post(
         `attachment; filename="${filename}"`
       );
 
-      res.send(
+      return res.send(
         result.buffer
       );
     } catch (error: any) {
@@ -2494,66 +2852,69 @@ app.post(
           .object({
             url:
               z.string().url(),
+
+            itemIndex:
+              z.coerce
+                .number()
+                .int()
+                .min(0)
+                .max(
+                  MAX_INSTAGRAM_CAROUSEL_ITEMS -
+                    1
+                ),
+
+            /*
+             * Tetap diterima supaya
+             * App.tsx lama tidak error.
+             * Backend TIDAK menggunakan
+             * imageUrl untuk download.
+             */
+            imageUrl:
+              z.string().url().optional(),
           })
           .parse(req.body);
 
-      const result =
-        await downloadRemoteInstagramMedia(
-          body.url
-        );
-
-      const contentType =
-        result.contentType.toLowerCase();
-
-      let extension =
-        "jpg";
-
       if (
-        contentType.includes(
-          "png"
+        !isInstagramUrl(
+          body.url
         )
       ) {
-        extension =
-          "png";
-      } else if (
-        contentType.includes(
-          "webp"
-        )
-      ) {
-        extension =
-          "webp";
-      } else if (
-        contentType.includes(
-          "jpeg"
-        ) ||
-        contentType.includes(
-          "jpg"
-        )
-      ) {
-        extension =
-          "jpg";
+        return res.status(400).json({
+          success: false,
+
+          message:
+            "URL postingan Instagram tidak valid.",
+        });
       }
+
+      console.log(
+        "INSTAGRAM DOWNLOAD START",
+        {
+          url:
+            cleanInstagramUrl(
+              body.url
+            ),
+
+          itemIndex:
+            body.itemIndex,
+        }
+      );
 
       /*
-       * Pastikan endpoint image
-       * benar-benar mendapatkan image.
+       * PENTING:
+       *
+       * Jangan download body.imageUrl.
+       *
+       * imageUrl adalah URL CDN hasil scraper
+       * dan bisa expired / mengembalikan HTML.
+       *
+       * Gunakan URL post asli + index.
        */
-      if (
-        !contentType.startsWith(
-          "image/"
-        )
-      ) {
-        throw new Error(
-          `Respons bukan gambar (${result.contentType}).`
+      const result =
+        await downloadInstagramWithApify(
+          body.url,
+          body.itemIndex
         );
-      }
-
-      const filename =
-        `letsedrop-${crypto
-          .randomBytes(4)
-          .toString(
-            "hex"
-          )}.${extension}`;
 
       res.setHeader(
         "Content-Type",
@@ -2567,25 +2928,49 @@ app.post(
 
       res.setHeader(
         "Content-Disposition",
-        `attachment; filename="${filename}"`
+        `attachment; filename="${safeFilename(
+          result.filename
+        )}"`
       );
 
-      res.send(
+      res.setHeader(
+        "Cache-Control",
+        "no-store"
+      );
+
+      console.log(
+        "INSTAGRAM DOWNLOAD SUCCESS",
+        {
+          itemIndex:
+            body.itemIndex,
+
+          filename:
+            result.filename,
+
+          contentType:
+            result.contentType,
+
+          size:
+            result.buffer.length,
+        }
+      );
+
+      return res.send(
         result.buffer
       );
     } catch (error: any) {
       console.error(
-        "DOWNLOAD IMAGE ERROR:",
+        "DOWNLOAD IMAGE APIFY ERROR:",
         error?.message ||
           error
       );
 
-      return res.status(500).json({
+      return res.status(422).json({
         success: false,
 
         message:
           error?.message ||
-          "Gagal mendownload gambar.",
+          "Foto Instagram tidak dapat diunduh saat ini.",
       });
     }
   }

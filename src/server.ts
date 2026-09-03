@@ -1,1825 +1,1257 @@
-/**
- * Letsedrop Production Server - Final
- * Entry: src/server.ts -> dist/server.js
- */
+import express from "express";
+import cors from "cors";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
+import { z } from "zod";
+import { chromium, Browser, Page } from "playwright-core";
+import { execFile } from "child_process";
+import { promisify } from "util";
+import fs from "fs/promises";
+import os from "os";
+import path from "path";
+import crypto from "crypto";
 
-import express, { Request, Response } from 'express';
-import cors from 'cors';
-import helmet from 'helmet';
-import rateLimit from 'express-rate-limit';
-import { spawn } from 'child_process';
-import path from 'path';
-import fs from 'fs';
-import dns from 'dns/promises';
-import { URL } from 'url';
-import crypto from 'crypto';
-import { chromium, Browser, Route } from 'playwright-core';
+const execFileAsync = promisify(execFile);
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
-const MAX_FILE_SIZE_MB = parseInt(process.env.MAX_FILE_SIZE_MB || '500', 10);
-const DOWNLOAD_TIMEOUT_MS = parseInt(
-  process.env.DOWNLOAD_TIMEOUT_MS || '300000',
-  10
-);
-const MAX_CONCURRENT_DOWNLOADS = parseInt(
-  process.env.MAX_CONCURRENT_DOWNLOADS || '5',
-  10
-);
-
-const MAX_INSTAGRAM_CAROUSEL_ITEMS = 30;
-const TEMP_DIR = path.resolve(process.env.TEMP_DIR || './tmp');
-
-if (!fs.existsSync(TEMP_DIR)) {
-  fs.mkdirSync(TEMP_DIR, { recursive: true });
-}
-
-app.use(
-  helmet({
-    contentSecurityPolicy: false,
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-  })
-);
-
+app.use(helmet());
 app.use(
   cors({
-    origin: '*',
-    methods: ['GET', 'POST'],
-    exposedHeaders: [
-      'Content-Disposition',
-      'Content-Type',
-      'Content-Length',
-    ],
+    origin: true,
+    methods: ["GET", "POST", "OPTIONS"],
   })
 );
+app.use(express.json({ limit: "1mb" }));
 
-app.use(express.json({ limit: '2mb' }));
-
-let activeDownloadsCount = 0;
-
-const apiLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 100,
+const limiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
   standardHeaders: true,
   legacyHeaders: false,
-  message: {
-    success: false,
-    message: 'Terlalu banyak permintaan. Tunggu sebentar lalu coba lagi.',
-  },
 });
 
-app.use('/api/', apiLimiter);
+app.use("/api/", limiter);
 
-const SUPPORTED_DOMAINS: { [key: string]: RegExp } = {
-  tiktok: /^(www\.|vm\.|vt\.)?tiktok\.com$/i,
-  youtube: /^(www\.|m\.)?(youtube\.com|youtu\.be)$/i,
-  instagram: /^(www\.)?instagram\.com$/i,
-  facebook: /^(www\.|m\.|web\.)?(facebook\.com|fb\.watch)$/i,
-  twitter: /^(www\.)?(twitter\.com|x\.com)$/i,
-  reddit: /^(www\.|old\.)?(reddit\.com|v\.redd\.it)$/i,
-};
+const PORT = Number(process.env.PORT || 3000);
+const CHROMIUM_PATH =
+  process.env.CHROMIUM_PATH || "/usr/bin/chromium";
 
-export interface CommandResult {
-  stdout: string;
-  stderr: string;
-  code: number;
+const MAX_INSTAGRAM_CAROUSEL_ITEMS = 30;
+
+type MediaType = "image" | "video";
+
+interface ExtractedMediaItem {
+  type: MediaType;
+  url: string;
+  thumbnail?: string;
 }
 
-export class CommandExecutionError extends Error {
-  code: number;
-  stdout: string;
-  stderr: string;
-  timedOut: boolean;
-
-  constructor(
-    message: string,
-    code: number,
-    stdout: string,
-    stderr: string,
-    timedOut = false
-  ) {
-    super(message);
-    this.name = 'CommandExecutionError';
-    this.code = code;
-    this.stdout = stdout;
-    this.stderr = stderr;
-    this.timedOut = timedOut;
-  }
-}
-
-async function validateUrlSafety(
-  inputUrl: string
-): Promise<{
-  safe: boolean;
-  platform?: string;
+interface InstagramResult {
+  success: boolean;
+  url: string;
+  isVideoPost: boolean;
+  title: string;
+  thumbnail: string;
+  itemCount: number;
+  items: ExtractedMediaItem[];
   error?: string;
-}> {
+}
+
+const AnalyzeSchema = z.object({
+  url: z.string().url(),
+});
+
+const DownloadSchema = z.object({
+  url: z.string().url(),
+});
+
+function isInstagramUrl(rawUrl: string): boolean {
   try {
-    const parsed = new URL(inputUrl);
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      return {
-        safe: false,
-        error: 'Protokol URL harus HTTP atau HTTPS.',
-      };
-    }
-
-    const hostname = parsed.hostname.toLowerCase();
-
-    let matchedPlatform: string | undefined;
-
-    for (const [platform, regex] of Object.entries(SUPPORTED_DOMAINS)) {
-      if (regex.test(hostname)) {
-        matchedPlatform = platform;
-        break;
-      }
-    }
-
-    if (!matchedPlatform) {
-      return {
-        safe: false,
-        error: 'Platform ini belum didukung.',
-      };
-    }
-
-    const addresses = await dns.lookup(hostname, { all: true });
-
-    for (const addr of addresses) {
-      const ip = addr.address;
-
-      if (
-        ip.startsWith('127.') ||
-        ip.startsWith('10.') ||
-        ip.startsWith('192.168.') ||
-        ip.startsWith('169.254.') ||
-        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
-        ip === '::1' ||
-        ip.startsWith('fe80:') ||
-        ip.startsWith('fc00:') ||
-        ip.startsWith('fd00:')
-      ) {
-        return {
-          safe: false,
-          error: 'Akses ke IP privat/internal diblokir demi keamanan.',
-        };
-      }
-    }
-
-    return {
-      safe: true,
-      platform: matchedPlatform,
-    };
-  } catch {
-    return {
-      safe: false,
-      error: 'Link tidak valid.',
-    };
-  }
-}
-
-function sanitizeFilename(rawTitle: string, ext: string): string {
-  let clean = rawTitle
-    .replace(/[^a-zA-Z0-9_\-\s]/g, '')
-    .trim();
-
-  if (!clean) {
-    clean = 'Letsedrop_Media';
-  }
-
-  clean = clean
-    .substring(0, 45)
-    .replace(/\s+/g, '_');
-
-  const safeExt =
-    ext.replace(/[^a-zA-Z0-9]/g, '').toLowerCase() || 'jpg';
-
-  return `${clean}_${Date.now().toString().slice(-4)}.${safeExt}`;
-}
-
-function runCommand(
-  command: string,
-  args: string[],
-  timeoutMs = 30000
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    console.log(
-      `[EXEC] ${command} ${args.join(' ')} timeout=${timeoutMs}ms`
+    const u = new URL(rawUrl);
+    return (
+      u.hostname === "instagram.com" ||
+      u.hostname === "www.instagram.com"
     );
+  } catch {
+    return false;
+  }
+}
 
-    const child = spawn(command, args, {
-      shell: false,
-      windowsHide: true,
-    });
+function cleanInstagramUrl(rawUrl: string): string {
+  try {
+    const u = new URL(rawUrl);
 
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
+    // Hilangkan query tracking seperti ?igsh=...
+    return `https://www.instagram.com${u.pathname}`;
+  } catch {
+    return rawUrl;
+  }
+}
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+function isAllowedInstagramMediaUrl(rawUrl: string): boolean {
+  try {
+    const u = new URL(rawUrl);
+    const host = u.hostname.toLowerCase();
 
-      child.kill('SIGKILL');
+    return (
+      host.endsWith("cdninstagram.com") ||
+      host.endsWith("fbcdn.net") ||
+      host.endsWith("instagram.com")
+    );
+  } catch {
+    return false;
+  }
+}
 
-      reject(
-        new CommandExecutionError(
-          'TIMEOUT',
-          -1,
-          stdout,
-          stderr,
-          true
-        )
-      );
-    }, timeoutMs);
+function normalizeMediaUrl(rawUrl: string): string | null {
+  if (!rawUrl) return null;
 
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
+  try {
+    const decoded = rawUrl.replace(/&amp;/g, "&");
 
-    child.stderr?.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
+    if (!isAllowedInstagramMediaUrl(decoded)) {
+      return null;
+    }
 
-    child.on('error', (err: Error) => {
-      clearTimeout(timer);
+    return decoded;
+  } catch {
+    return null;
+  }
+}
 
-      reject(
-        new CommandExecutionError(
-          err.message,
-          -1,
-          stdout,
-          stderr,
-          false
-        )
-      );
-    });
+function uniqueMedia(items: ExtractedMediaItem[]): ExtractedMediaItem[] {
+  const seen = new Set<string>();
+  const result: ExtractedMediaItem[] = [];
 
-    child.on('close', (code: number | null) => {
-      clearTimeout(timer);
+  for (const item of items) {
+    if (!item.url) continue;
 
-      if (timedOut) return;
+    // Hilangkan query tracking yang tidak penting untuk dedupe
+    let key = item.url;
 
-      const exitCode = code ?? 1;
+    try {
+      const u = new URL(item.url);
+      key = `${u.hostname}${u.pathname}`;
+    } catch {}
 
-      if (exitCode === 0) {
-        resolve({
-          stdout,
-          stderr,
-          code: exitCode,
-        });
-      } else {
-        reject(
-          new CommandExecutionError(
-            stderr.trim() ||
-              `${command} gagal dengan exit code ${exitCode}`,
-            exitCode,
-            stdout,
-            stderr,
-            false
-          )
-        );
-      }
-    });
+    if (seen.has(key)) continue;
+
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
+}
+
+async function launchBrowser(): Promise<Browser> {
+  return chromium.launch({
+    executablePath: CHROMIUM_PATH,
+    headless: true,
+    args: [
+      "--no-sandbox",
+      "--disable-setuid-sandbox",
+      "--disable-dev-shm-usage",
+      "--disable-gpu",
+      "--disable-software-rasterizer",
+      "--no-zygote",
+      "--single-process",
+    ],
   });
 }
 
-export interface ExtractedMediaItem {
-  index: number;
-  type: 'image' | 'video';
-  url: string;
-  thumbnail: string;
-  ext: string;
-  width?: number;
-  height?: number;
-}
-
-/**
- * ============================================================
- * INSTAGRAM POST EXTRACTOR
- *
- * SATU URL /p/... = SATU POSTINGAN
- *
- * Maksimal 30 media:
- * - foto
- * - video
- * - campuran foto + video
- *
- * Tidak mengambil seluruh <img> dari halaman.
- * ============================================================
- */
-async function extractInstagramWithPlaywright(
-  targetUrl: string
-): Promise<{
-  success: boolean;
-  isVideoPost?: boolean;
-  title?: string;
-  thumbnail?: string;
-  items?: ExtractedMediaItem[];
-  error?: string;
-}> {
-  let browser: Browser | null = null;
-
-  console.log(
-    `[INSTAGRAM] Extraction started: ${targetUrl}`
-  );
+async function waitForInstagram(page: Page): Promise<void> {
+  await page.waitForTimeout(2500);
 
   try {
-    browser = await chromium.launch({
-      executablePath:
-        process.env.CHROMIUM_PATH || '/usr/bin/chromium',
+    await page.waitForLoadState("domcontentloaded", {
+      timeout: 10000,
+    });
+  } catch {}
 
-      headless: true,
+  await page.waitForTimeout(2500);
+}
 
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--disable-gpu',
-      ],
+async function getPageText(page: Page): Promise<string> {
+  try {
+    return await page.locator("body").innerText({
+      timeout: 5000,
+    });
+  } catch {
+    return "";
+  }
+}
+
+function looksLikeInstagramLoginPage(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  return (
+    lower.includes("log in") &&
+    lower.includes("sign up")
+  );
+}
+
+function looksLikeInstagramChallenge(text: string): boolean {
+  const lower = text.toLowerCase();
+
+  return (
+    lower.includes("challenge_required") ||
+    lower.includes("suspicious login") ||
+    lower.includes("confirm your identity") ||
+    lower.includes("try again later")
+  );
+}
+
+async function extractFromPerformanceEntries(
+  page: Page
+): Promise<ExtractedMediaItem[]> {
+  try {
+    const urls = await page.evaluate(() => {
+      const entries = performance.getEntriesByType(
+        "resource"
+      ) as PerformanceResourceTiming[];
+
+      return entries
+        .map((e) => e.name)
+        .filter(Boolean);
     });
 
-    const context = await browser.newContext({
-      userAgent:
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    const items: ExtractedMediaItem[] = [];
 
+    for (const rawUrl of urls) {
+      const url = normalizeMediaUrl(rawUrl);
+
+      if (!url) continue;
+
+      const lower = url.toLowerCase();
+
+      if (
+        lower.includes(".mp4") ||
+        lower.includes("/v/t") ||
+        lower.includes("video")
+      ) {
+        items.push({
+          type: "video",
+          url,
+        });
+      } else {
+        items.push({
+          type: "image",
+          url,
+        });
+      }
+    }
+
+    return uniqueMedia(items);
+  } catch {
+    return [];
+  }
+}
+
+async function extractVisibleMedia(
+  page: Page
+): Promise<ExtractedMediaItem[]> {
+  const items = await page.evaluate(() => {
+    const result: {
+      type: "image" | "video";
+      url: string;
+      thumbnail?: string;
+      area: number;
+    }[] = [];
+
+    const addImage = (
+      el: HTMLImageElement,
+      url?: string
+    ) => {
+      const src =
+        url ||
+        el.currentSrc ||
+        el.src ||
+        el.getAttribute("data-src") ||
+        "";
+
+      if (!src) return;
+
+      const rect = el.getBoundingClientRect();
+
+      const area =
+        Math.max(0, rect.width) *
+        Math.max(0, rect.height);
+
+      result.push({
+        type: "image",
+        url: src,
+        area,
+      });
+    };
+
+    const addVideo = (
+      el: HTMLVideoElement,
+      url?: string
+    ) => {
+      const src =
+        url ||
+        el.currentSrc ||
+        el.src ||
+        el.querySelector("source")?.src ||
+        "";
+
+      if (!src) return;
+
+      const rect = el.getBoundingClientRect();
+
+      const area =
+        Math.max(0, rect.width) *
+        Math.max(0, rect.height);
+
+      result.push({
+        type: "video",
+        url: src,
+        thumbnail: el.poster || undefined,
+        area,
+      });
+    };
+
+    document
+      .querySelectorAll("img")
+      .forEach((el) => addImage(el));
+
+    document
+      .querySelectorAll("video")
+      .forEach((el) => addVideo(el));
+
+    return result
+      .sort((a, b) => b.area - a.area)
+      .slice(0, 20);
+  });
+
+  const normalized: ExtractedMediaItem[] = [];
+
+  for (const item of items) {
+    const url = normalizeMediaUrl(item.url);
+
+    if (!url) continue;
+
+    normalized.push({
+      type: item.type,
+      url,
+      thumbnail: item.thumbnail
+        ? normalizeMediaUrl(item.thumbnail) || undefined
+        : undefined,
+    });
+  }
+
+  return uniqueMedia(normalized);
+}
+
+async function getBestCurrentMedia(
+  page: Page
+): Promise<ExtractedMediaItem | null> {
+  const candidates = await extractVisibleMedia(page);
+
+  if (!candidates.length) {
+    return null;
+  }
+
+  // Pilih media terbesar/terlihat paling dominan.
+  return candidates[0];
+}
+
+async function findNextButton(page: Page) {
+  const selectors = [
+    'button[aria-label*="Next"]',
+    'button[aria-label*="next"]',
+    'button[aria-label*="Berikut"]',
+    'button[aria-label*="berikut"]',
+    'div[role="button"][aria-label*="Next"]',
+    'div[role="button"][aria-label*="next"]',
+    'div[role="button"][aria-label*="Berikut"]',
+    'div[role="button"][aria-label*="berikut"]',
+  ];
+
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+
+    try {
+      const count = await locator.count();
+
+      if (count > 0) {
+        for (let i = 0; i < Math.min(count, 5); i++) {
+          const el = locator.nth(i);
+
+          if (await el.isVisible().catch(() => false)) {
+            return el;
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return null;
+}
+
+async function extractInstagramWithPlaywright(
+  rawUrl: string
+): Promise<InstagramResult> {
+  const url = cleanInstagramUrl(rawUrl);
+
+  let browser: Browser | null = null;
+
+  try {
+    browser = await launchBrowser();
+
+    const context = await browser.newContext({
       viewport: {
         width: 1280,
         height: 900,
       },
-
-      deviceScaleFactor: 1,
+      userAgent:
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+      locale: "en-US",
+      timezoneId: "Asia/Jakarta",
     });
 
     const page = await context.newPage();
 
-    await page.route('**/*', (route: Route) => {
-      const reqUrl = route.request().url().toLowerCase();
-
-      if (
-        reqUrl.includes('google-analytics') ||
-        reqUrl.includes('facebook.com/tr') ||
-        reqUrl.includes('logging') ||
-        reqUrl.includes(
-          'static.cdninstagram.com/rsrc.php'
-        )
-      ) {
-        return route.abort();
-      }
-
-      return route.continue();
+    await page.goto(url, {
+      waitUntil: "domcontentloaded",
+      timeout: 30000,
     });
 
-    await page.goto(targetUrl, {
-      waitUntil: 'domcontentloaded',
-      timeout: 20000,
-    });
+    await waitForInstagram(page);
 
     const finalUrl = page.url();
 
+    const text = await getPageText(page);
+
+    if (looksLikeInstagramChallenge(text)) {
+      return {
+        success: false,
+        url,
+        isVideoPost: false,
+        title: "",
+        thumbnail: "",
+        itemCount: 0,
+        items: [],
+        error:
+          "Instagram meminta verifikasi/challenge saat diakses dari server.",
+      };
+    }
+
     if (
-      finalUrl.includes('/accounts/login') ||
-      finalUrl.includes('login_required')
+      finalUrl.includes("/accounts/login") ||
+      looksLikeInstagramLoginPage(text)
     ) {
       return {
         success: false,
+        url,
+        isVideoPost: false,
+        title: "",
+        thumbnail: "",
+        itemCount: 0,
+        items: [],
         error:
-          'Media ini tidak dapat diakses karena bersifat privat atau membutuhkan login.',
+          "Instagram mengarahkan server ke halaman login.",
       };
     }
 
-    await page.waitForTimeout(1800);
-
-    /**
-     * PENTING:
-     * Hanya ambil ARTICLE pertama.
-     * Ini adalah postingan yang sedang dibuka,
-     * bukan seluruh halaman Instagram.
+    /*
+     * Instagram sering mengubah struktur DOM.
+     * Jadi kita TIDAK mengharuskan adanya <article>.
+     *
+     * Kita mencari media yang benar-benar sedang tampil,
+     * lalu menggunakan tombol Next untuk berpindah slide.
      */
-    const article = page.locator('article').first();
-
-    if (!(await article.count())) {
-      return {
-        success: false,
-        error: 'Postingan Instagram tidak ditemukan.',
-      };
-    }
-
-    /**
-     * Ambil media aktif dari ARTICLE.
-     */
-    const getCurrentMedia =
-      async (): Promise<ExtractedMediaItem | null> => {
-        return await article.evaluate(() => {
-          const allowedDomains = [
-            'cdninstagram.com',
-            'fbcdn.net',
-            'lookaside.fbsbx.com',
-          ];
-
-          const isAllowedUrl = (
-            value: string
-          ): boolean => {
-            try {
-              const u = new URL(value);
-
-              if (
-                u.hostname.includes(
-                  'static.cdninstagram.com'
-                )
-              ) {
-                return false;
-              }
-
-              return allowedDomains.some((domain) =>
-                u.hostname.endsWith(domain)
-              );
-            } catch {
-              return false;
-            }
-          };
-
-          const candidates: Array<{
-            type: 'image' | 'video';
-            url: string;
-            thumbnail: string;
-            width: number;
-            height: number;
-            area: number;
-          }> = [];
-
-          /**
-           * VIDEO
-           */
-          const videos = Array.from(
-            document.querySelectorAll('video')
-          ) as HTMLVideoElement[];
-
-          for (const video of videos) {
-            const source =
-              video.currentSrc ||
-              video.src ||
-              video.querySelector('source')?.src ||
-              '';
-
-            if (
-              !source ||
-              !isAllowedUrl(source)
-            ) {
-              continue;
-            }
-
-            const width =
-              video.videoWidth ||
-              video.clientWidth ||
-              0;
-
-            const height =
-              video.videoHeight ||
-              video.clientHeight ||
-              0;
-
-            if (width < 220 || height < 220) {
-              continue;
-            }
-
-            const poster =
-              video.poster &&
-              isAllowedUrl(video.poster)
-                ? video.poster
-                : source;
-
-            candidates.push({
-              type: 'video',
-              url: source,
-              thumbnail: poster,
-              width,
-              height,
-              area: width * height,
-            });
-          }
-
-          /**
-           * IMAGE
-           */
-          const images = Array.from(
-            document.querySelectorAll('img')
-          ) as HTMLImageElement[];
-
-          for (const img of images) {
-            const src =
-              img.currentSrc ||
-              img.src ||
-              '';
-
-            if (
-              !src ||
-              !isAllowedUrl(src)
-            ) {
-              continue;
-            }
-
-            const width =
-              img.naturalWidth ||
-              img.clientWidth ||
-              0;
-
-            const height =
-              img.naturalHeight ||
-              img.clientHeight ||
-              0;
-
-            if (width < 220 || height < 220) {
-              continue;
-            }
-
-            candidates.push({
-              type: 'image',
-              url: src,
-              thumbnail: src,
-              width,
-              height,
-              area: width * height,
-            });
-          }
-
-          /**
-           * Media terbesar dianggap media utama
-           * dari slide yang sedang aktif.
-           */
-          candidates.sort(
-            (a, b) => b.area - a.area
-          );
-
-          const best = candidates[0];
-
-          if (!best) {
-            return null;
-          }
-
-          return {
-            index: 0,
-            type: best.type,
-            url: best.url,
-            thumbnail: best.thumbnail,
-            ext:
-              best.type === 'video'
-                ? 'mp4'
-                : 'jpg',
-            width: best.width,
-            height: best.height,
-          };
-        });
-      };
 
     const items: ExtractedMediaItem[] = [];
-    const seenUrls = new Set<string>();
 
-    /**
-     * Maksimal 30 slide.
+    const firstMedia = await getBestCurrentMedia(page);
+
+    if (firstMedia) {
+      items.push(firstMedia);
+    }
+
+    /*
+     * Kalau tidak menemukan media dari DOM,
+     * coba resource network yang sudah dimuat.
      */
+    if (!items.length) {
+      const networkItems =
+        await extractFromPerformanceEntries(page);
+
+      if (networkItems.length) {
+        items.push(networkItems[0]);
+      }
+    }
+
+    /*
+     * Carousel:
+     * maksimal 30 slide.
+     */
+    const visited = new Set<string>();
+
     for (
       let slide = 0;
-      slide < MAX_INSTAGRAM_CAROUSEL_ITEMS;
+      slide < MAX_INSTAGRAM_CAROUSEL_ITEMS - 1;
       slide++
     ) {
-      const media =
-        await getCurrentMedia();
+      const current =
+        items[items.length - 1];
 
-      if (!media) {
+      if (!current) break;
+
+      let currentKey = current.url;
+
+      try {
+        const u = new URL(current.url);
+        currentKey = `${u.hostname}${u.pathname}`;
+      } catch {}
+
+      visited.add(currentKey);
+
+      const nextButton =
+        await findNextButton(page);
+
+      if (!nextButton) {
         break;
       }
 
-      if (!seenUrls.has(media.url)) {
-        seenUrls.add(media.url);
+      const beforeUrl = page.url();
 
-        media.index = items.length;
+      await nextButton
+        .click({
+          timeout: 3000,
+        })
+        .catch(() => null);
 
-        items.push(media);
+      await page.waitForTimeout(900);
 
-        console.log(
-          `[INSTAGRAM] Slide ${items.length}: ${media.type}`
-        );
+      let nextMedia =
+        await getBestCurrentMedia(page);
+
+      /*
+       * Tunggu sedikit lagi jika media belum berganti.
+       */
+      if (
+        nextMedia &&
+        visited.has(
+          (() => {
+            try {
+              const u = new URL(nextMedia.url);
+              return `${u.hostname}${u.pathname}`;
+            } catch {
+              return nextMedia.url;
+            }
+          })()
+        )
+      ) {
+        await page.waitForTimeout(1200);
+        nextMedia =
+          await getBestCurrentMedia(page);
       }
 
-      /**
-       * Cari Next hanya di ARTICLE target.
-       */
-      const nextButton = article
-        .locator(
-          'button[aria-label*="Next"],' +
-            'button[aria-label*="next"],' +
-            'button[aria-label*="Selanjutnya"],' +
-            'button[aria-label*="Berikutnya"]'
-        )
-        .first();
+      if (!nextMedia) {
+        break;
+      }
 
-      if (!(await nextButton.count())) {
+      let nextKey = nextMedia.url;
+
+      try {
+        const u = new URL(nextMedia.url);
+        nextKey = `${u.hostname}${u.pathname}`;
+      } catch {}
+
+      if (visited.has(nextKey)) {
+        /*
+         * URL sama berarti carousel sudah kembali
+         * ke slide yang pernah dikunjungi.
+         */
         break;
       }
 
       if (
-        !(await nextButton
-          .isVisible()
-          .catch(() => false))
+        nextMedia.type === "video" &&
+        !nextMedia.url
       ) {
         break;
       }
 
-      const currentUrl = media.url;
+      items.push(nextMedia);
+      visited.add(nextKey);
 
-      try {
-        await nextButton.click({
-          timeout: 2000,
-        });
-      } catch {
-        break;
-      }
-
-      /**
-       * Tunggu media berubah.
+      /*
+       * Kalau tombol next masih ada tetapi URL halaman
+       * berubah, tetap lanjut. Instagram carousel
+       * tidak selalu mengubah URL, jadi perubahan URL
+       * bukan syarat.
        */
-      let changed = false;
+      void beforeUrl;
+    }
 
-      for (let retry = 0; retry < 6; retry++) {
-        await page.waitForTimeout(350);
+    const finalItems = uniqueMedia(items).slice(
+      0,
+      MAX_INSTAGRAM_CAROUSEL_ITEMS
+    );
 
-        const nextMedia =
-          await getCurrentMedia();
+    /*
+     * Fallback tambahan untuk post yang tidak punya
+     * tombol carousel atau DOM-nya aneh.
+     */
+    if (!finalItems.length) {
+      const networkItems =
+        await extractFromPerformanceEntries(page);
 
-        if (
-          nextMedia &&
-          nextMedia.url !== currentUrl
-        ) {
-          changed = true;
-          break;
-        }
-      }
+      const usableNetworkItems =
+        networkItems
+          .filter((item) => isAllowedInstagramMediaUrl(item.url))
+          .slice(0, MAX_INSTAGRAM_CAROUSEL_ITEMS);
 
-      if (!changed) {
-        break;
+      if (usableNetworkItems.length) {
+        const hasVideo =
+          usableNetworkItems.some(
+            (item) => item.type === "video"
+          );
+
+        return {
+          success: true,
+          url,
+          isVideoPost:
+            hasVideo && usableNetworkItems.length === 1,
+          title: "",
+          thumbnail:
+            usableNetworkItems[0]?.url || "",
+          itemCount: usableNetworkItems.length,
+          items: usableNetworkItems,
+        };
       }
     }
 
-    console.log(
-      `[INSTAGRAM] Total media target post: ${items.length}`
-    );
-
-    if (items.length === 0) {
+    if (!finalItems.length) {
       return {
         success: false,
+        url,
+        isVideoPost: false,
+        title: "",
+        thumbnail: "",
+        itemCount: 0,
+        items: [],
         error:
-          'Tidak dapat menemukan media pada postingan Instagram ini.',
+          "Media postingan Instagram tidak berhasil ditemukan.",
       };
     }
 
-    /**
-     * SATU VIDEO:
-     * diteruskan ke yt-dlp.
+    const hasVideo = finalItems.some(
+      (item) => item.type === "video"
+    );
+
+    /*
+     * Satu video saja:
+     * biarkan endpoint /api/analyze menggunakan yt-dlp
+     * untuk download video Instagram.
      */
     if (
-      items.length === 1 &&
-      items[0].type === 'video'
+      finalItems.length === 1 &&
+      finalItems[0].type === "video"
     ) {
       return {
         success: true,
+        url,
         isVideoPost: true,
+        title: "",
         thumbnail:
-          items[0].thumbnail,
+          finalItems[0].thumbnail ||
+          finalItems[0].url,
+        itemCount: 1,
+        items: finalItems,
       };
     }
 
-    let pageTitle =
-      'Instagram Post';
-
-    try {
-      const metaDesc =
-        await page
-          .locator(
-            'meta[property="og:title"], meta[name="description"]'
-          )
-          .first()
-          .getAttribute(
-            'content'
-          );
-
-      if (metaDesc) {
-        pageTitle =
-          metaDesc
-            .substring(0, 70)
-            .trim();
-      }
-    } catch {}
-
     return {
       success: true,
+      url,
       isVideoPost: false,
-      title: pageTitle,
+      title: "",
       thumbnail:
-        items[0].thumbnail,
-      items,
+        finalItems[0]?.thumbnail ||
+        finalItems[0]?.url ||
+        "",
+      itemCount: finalItems.length,
+      items: finalItems,
     };
-  } catch (err: unknown) {
-    const msg =
-      err instanceof Error
-        ? err.message
-        : String(err);
-
-    console.error(
-      '[INSTAGRAM] Playwright error:',
-      msg
-    );
-
+  } catch (error: any) {
     return {
       success: false,
-      error: msg,
+      url,
+      isVideoPost: false,
+      title: "",
+      thumbnail: "",
+      itemCount: 0,
+      items: [],
+      error:
+        error?.message ||
+        "Gagal memproses postingan Instagram.",
     };
   } finally {
     if (browser) {
-      await browser
-        .close()
-        .catch(() => {});
+      await browser.close().catch(() => {});
     }
   }
 }
 
-// ============================================================
-// HEALTH
-// ============================================================
+async function runYtDlp(
+  url: string,
+  outputDir: string
+) {
+  const outputTemplate = path.join(
+    outputDir,
+    "%(title).100B-%(id)s.%(ext)s"
+  );
 
-app.get(
-  '/api/health',
-  (_req: Request, res: Response): void => {
-    res.json({
-      status: 'ok',
-      timestamp:
-        new Date().toISOString(),
-      activeDownloads:
-        activeDownloadsCount,
+  const args = [
+    "--no-playlist",
+    "--no-warnings",
+    "--restrict-filenames",
+    "-o",
+    outputTemplate,
+    url,
+  ];
+
+  return execFileAsync(
+    "yt-dlp",
+    args,
+    {
+      timeout: 120000,
+      maxBuffer: 10 * 1024 * 1024,
+    }
+  );
+}
+
+function safeFilename(name: string): string {
+  return (
+    name
+      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180) || "download"
+  );
+}
+
+async function downloadRemoteInstagramMedia(
+  rawUrl: string
+): Promise<{
+  buffer: Buffer;
+  contentType: string;
+}> {
+  const url = normalizeMediaUrl(rawUrl);
+
+  if (!url) {
+    throw new Error(
+      "URL media Instagram tidak diizinkan."
+    );
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
+      Referer: "https://www.instagram.com/",
+    },
+    signal: AbortSignal.timeout(30000),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      `Gagal mengambil media Instagram (${response.status}).`
+    );
+  }
+
+  const arrayBuffer =
+    await response.arrayBuffer();
+
+  const buffer = Buffer.from(arrayBuffer);
+
+  const contentType =
+    response.headers.get("content-type") ||
+    "application/octet-stream";
+
+  return {
+    buffer,
+    contentType,
+  };
+}
+
+/* =========================
+   HEALTH
+========================= */
+
+app.get("/api/health", (_req, res) => {
+  res.json({
+    success: true,
+    status: "ok",
+    service: "linkdrop-backend",
+    chromium: CHROMIUM_PATH,
+    timestamp: new Date().toISOString(),
+  });
+});
+
+/* =========================
+   DEBUG INSTAGRAM
+========================= */
+
+app.get("/api/debug-instagram", async (req, res) => {
+  const rawUrl = String(req.query.url || "");
+
+  if (!rawUrl) {
+    return res.status(400).json({
+      success: false,
+      message: "Query parameter url diperlukan.",
     });
   }
-);
 
-// ============================================================
-// ANALYZE
-// ============================================================
+  if (!isInstagramUrl(rawUrl)) {
+    return res.status(400).json({
+      success: false,
+      message: "URL harus berasal dari Instagram.",
+    });
+  }
 
-app.post(
-  '/api/analyze',
-  async (
-    req: Request,
-    res: Response
-  ): Promise<void> => {
-    const { url } = req.body;
+  const result =
+    await extractInstagramWithPlaywright(rawUrl);
 
-    if (
-      !url ||
-      typeof url !== 'string'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'URL publik yang didukung diperlukan.',
-      });
-      return;
-    }
+  return res.json(result);
+});
 
-    const safety =
-      await validateUrlSafety(url);
+/* =========================
+   ANALYZE
+========================= */
 
-    if (!safety.safe) {
-      res.status(400).json({
-        success: false,
-        message:
-          safety.error ||
-          'Link tidak dapat diproses.',
-      });
-      return;
-    }
+app.post("/api/analyze", async (req, res) => {
+  try {
+    const parsed =
+      AnalyzeSchema.parse(req.body);
 
-    /**
-     * INSTAGRAM POST
-     */
-    if (
-      safety.platform ===
-        'instagram' &&
-      url.includes('/p/')
-    ) {
-      console.log(
-        `[ANALYZE] Instagram post: ${url}`
-      );
+    const rawUrl = parsed.url.trim();
 
-      const igResult =
-        await extractInstagramWithPlaywright(
-          url
-        );
+    if (isInstagramUrl(rawUrl)) {
+      const instagram =
+        await extractInstagramWithPlaywright(rawUrl);
 
-      /**
-       * Carousel / foto.
+      /*
+       * Kalau single video, gunakan yt-dlp.
        */
       if (
-        igResult.success &&
-        !igResult.isVideoPost &&
-        igResult.items &&
-        igResult.items.length > 0
+        instagram.success &&
+        instagram.isVideoPost &&
+        instagram.items.length === 1
       ) {
-        res.json({
+        return res.json({
           success: true,
-          platform:
-            'instagram',
-          type: 'image',
+          type: "video",
+          url: instagram.url,
           title:
-            igResult.title ||
-            'Foto Instagram',
+            instagram.title ||
+            "Instagram Video",
           thumbnail:
-            igResult.thumbnail ||
-            igResult.items[0].url,
-          uploader:
-            'Instagram User',
-          items:
-            igResult.items,
-          url,
+            instagram.thumbnail ||
+            "",
+          itemCount: 1,
+          items: instagram.items,
         });
-
-        return;
       }
 
-      /**
-       * Single video.
-       */
       if (
-        igResult.isVideoPost
+        instagram.success &&
+        instagram.items.length > 0
       ) {
-        console.log(
-          '[ANALYZE] Instagram single video -> yt-dlp'
-        );
-      } else if (
-        igResult.error
-      ) {
-        console.warn(
-          `[ANALYZE] Instagram extractor: ${igResult.error}`
-        );
+        return res.json({
+          success: true,
+          type: "image",
+          url: instagram.url,
+          title:
+            instagram.title ||
+            "Instagram Post",
+          thumbnail:
+            instagram.thumbnail ||
+            "",
+          itemCount:
+            instagram.items.length,
+          items: instagram.items,
+        });
       }
+
+      /*
+       * Fallback terakhir: coba yt-dlp.
+       */
+      try {
+        const tempDir =
+          await fs.mkdtemp(
+            path.join(
+              os.tmpdir(),
+              "letsedrop-"
+            )
+          );
+
+        try {
+          const info =
+            await execFileAsync(
+              "yt-dlp",
+              [
+                "--dump-single-json",
+                "--no-playlist",
+                "--no-warnings",
+                rawUrl,
+              ],
+              {
+                timeout: 60000,
+                maxBuffer:
+                  10 * 1024 * 1024,
+              }
+            );
+
+          const data =
+            JSON.parse(info.stdout);
+
+          return res.json({
+            success: true,
+            type:
+              data.ext === "jpg" ||
+              data.ext === "jpeg" ||
+              data.ext === "png"
+                ? "image"
+                : "video",
+            url: rawUrl,
+            title:
+              data.title ||
+              "Instagram",
+            thumbnail:
+              data.thumbnail ||
+              "",
+            itemCount: 1,
+            items: [
+              {
+                type:
+                  data.ext === "jpg" ||
+                  data.ext === "jpeg" ||
+                  data.ext === "png"
+                    ? "image"
+                    : "video",
+                url:
+                  data.url ||
+                  rawUrl,
+                thumbnail:
+                  data.thumbnail ||
+                  undefined,
+              },
+            ],
+          });
+        } finally {
+          await fs.rm(
+            tempDir,
+            {
+              recursive: true,
+              force: true,
+            }
+          );
+        }
+      } catch {}
+
+      return res.status(422).json({
+        success: false,
+        message:
+          instagram.error ||
+          "Postingan Instagram tidak ditemukan.",
+      });
     }
 
-    /**
-     * VIDEO PIPELINE
+    /*
+     * Non-Instagram:
+     * gunakan yt-dlp untuk URL publik yang didukung.
      */
     try {
-      const args = [
-        '--dump-json',
-        '--no-playlist',
-        '--skip-download',
-        '--no-warnings',
-        '--no-check-certificates',
-        url,
-      ];
-
-      const { stdout } =
-        await runCommand(
-          'yt-dlp',
-          args,
-          25000
+      const info =
+        await execFileAsync(
+          "yt-dlp",
+          [
+            "--dump-single-json",
+            "--no-playlist",
+            "--no-warnings",
+            rawUrl,
+          ],
+          {
+            timeout: 60000,
+            maxBuffer:
+              10 * 1024 * 1024,
+          }
         );
 
-      const meta =
-        JSON.parse(stdout);
+      const data =
+        JSON.parse(info.stdout);
 
-      res.json({
+      return res.json({
         success: true,
-        platform:
-          safety.platform,
-        type: 'video',
+        type: "video",
+        url: rawUrl,
         title:
-          meta.title ||
-          'Letsedrop Video',
+          data.title ||
+          "Video",
         thumbnail:
-          meta.thumbnail || '',
-        uploader:
-          meta.uploader ||
-          meta.channel ||
-          'Publik',
-        duration:
-          meta.duration || 0,
-        url,
-        formats: [
+          data.thumbnail ||
+          "",
+        itemCount: 1,
+        items: [
           {
-            id: 'best',
-            label:
-              'Video MP4 (HD)',
-            extension: 'mp4',
-            quality: 'HD',
-            type: 'video',
-          },
-          {
-            id: 'audio',
-            label:
-              'Audio MP3',
-            extension: 'mp3',
-            quality:
-              'High Audio',
-            type: 'audio',
+            type: "video",
+            url:
+              data.webpage_url ||
+              rawUrl,
+            thumbnail:
+              data.thumbnail ||
+              undefined,
           },
         ],
       });
-    } catch (err: unknown) {
-      const errorMsg =
-        err instanceof Error
-          ? err.message
-          : String(err);
-
-      console.error(
-        '[Analyze Error]',
-        errorMsg
-      );
-
-      if (
-        safety.platform ===
-        'instagram'
-      ) {
-        res.status(400).json({
-          success: false,
-          message:
-            'Foto/media Instagram ini tidak dapat diproses saat ini.',
-        });
-        return;
-      }
-
-      const errLower =
-        errorMsg.toLowerCase();
-
-      if (
-        errLower.includes(
-          'private'
-        ) ||
-        errLower.includes(
-          'login'
-        )
-      ) {
-        res.status(400).json({
-          success: false,
-          message:
-            'Media ini tidak dapat diakses karena bersifat privat atau membutuhkan login.',
-        });
-        return;
-      }
-
-      res.status(500).json({
+    } catch (error: any) {
+      return res.status(422).json({
         success: false,
         message:
-          'Media tidak tersedia atau tidak dapat diproses saat ini.',
+          error?.stderr ||
+          error?.message ||
+          "URL tidak dapat diproses.",
       });
     }
-  }
-);
-
-// ============================================================
-// DOWNLOAD VIDEO / AUDIO
-// ============================================================
-
-app.post(
-  '/api/download',
-  async (
-    req: Request,
-    res: Response
-  ): Promise<void> => {
-    const { url, formatId } =
-      req.body;
-
-    if (
-      !url ||
-      typeof url !== 'string'
-    ) {
-      res.status(400).json({
+  } catch (error: any) {
+    if (error instanceof z.ZodError) {
+      return res.status(400).json({
         success: false,
-        message:
-          'URL publik yang didukung diperlukan.',
+        message: "URL tidak valid.",
       });
-      return;
     }
 
-    const safety =
-      await validateUrlSafety(url);
-
-    if (!safety.safe) {
-      res.status(400).json({
-        success: false,
-        message:
-          safety.error,
-      });
-      return;
-    }
-
-    if (
-      activeDownloadsCount >=
-      MAX_CONCURRENT_DOWNLOADS
-    ) {
-      res.status(503).json({
-        success: false,
-        message:
-          'Server sibuk. Coba beberapa saat lagi.',
-      });
-      return;
-    }
-
-    activeDownloadsCount++;
-
-    const isAudio =
-      formatId === 'audio';
-
-    const ext =
-      isAudio ? 'mp3' : 'mp4';
-
-    const jobId =
-      crypto
-        .randomBytes(8)
-        .toString('hex');
-
-    const tempOutputTemplate =
-      path.join(
-        TEMP_DIR,
-        `${jobId}.%(ext)s`
-      );
-
-    let finalFilePath = '';
-
-    try {
-      const args = [
-        '--no-playlist',
-        '--no-warnings',
-        '--no-check-certificates',
-        '--max-filesize',
-        `${MAX_FILE_SIZE_MB}m`,
-        '-f',
-        isAudio
-          ? 'bestaudio/best'
-          : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-        '-o',
-        tempOutputTemplate,
-      ];
-
-      if (isAudio) {
-        args.push(
-          '--extract-audio',
-          '--audio-format',
-          'mp3'
-        );
-      } else {
-        args.push(
-          '--merge-output-format',
-          'mp4'
-        );
-      }
-
-      args.push(url);
-
-      await runCommand(
-        'yt-dlp',
-        args,
-        DOWNLOAD_TIMEOUT_MS
-      );
-
-      const files =
-        fs.readdirSync(
-          TEMP_DIR
-        );
-
-      const matched =
-        files.find((f) =>
-          f.startsWith(jobId)
-        );
-
-      if (!matched) {
-        throw new Error(
-          'File hasil download tidak ditemukan.'
-        );
-      }
-
-      finalFilePath =
-        path.join(
-          TEMP_DIR,
-          matched
-        );
-
-      const stats =
-        fs.statSync(
-          finalFilePath
-        );
-
-      const safeFilename =
-        sanitizeFilename(
-          `Letsedrop_${safety.platform || 'Media'}`,
-          ext
-        );
-
-      const mimeType =
-        isAudio
-          ? 'audio/mpeg'
-          : 'video/mp4';
-
-      res.setHeader(
-        'Content-Type',
-        mimeType
-      );
-
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${safeFilename}"`
-      );
-
-      res.setHeader(
-        'Content-Length',
-        stats.size
-      );
-
-      const fileStream =
-        fs.createReadStream(
-          finalFilePath
-        );
-
-      fileStream.pipe(res);
-
-      const cleanup =
-        () => {
-          try {
-            if (
-              finalFilePath &&
-              fs.existsSync(
-                finalFilePath
-              )
-            ) {
-              fs.unlinkSync(
-                finalFilePath
-              );
-            }
-          } catch {}
-        };
-
-      res.on(
-        'finish',
-        cleanup
-      );
-
-      res.on(
-        'close',
-        cleanup
-      );
-    } catch (err: unknown) {
-      const errorMsg =
-        err instanceof Error
-          ? err.message
-          : String(err);
-
-      console.error(
-        '[Download Error]',
-        errorMsg
-      );
-
-      if (
-        finalFilePath &&
-        fs.existsSync(
-          finalFilePath
-        )
-      ) {
-        try {
-          fs.unlinkSync(
-            finalFilePath
-          );
-        } catch {}
-      }
-
-      if (
-        !res.headersSent
-      ) {
-        res.status(500).json({
-          success: false,
-          message:
-            'Gagal memproses download media.',
-        });
-      }
-    } finally {
-      activeDownloadsCount =
-        Math.max(
-          0,
-          activeDownloadsCount - 1
-        );
-    }
-  }
-);
-
-// ============================================================
-// DOWNLOAD IMAGE
-// ============================================================
-
-app.post(
-  '/api/download-image',
-  async (
-    req: Request,
-    res: Response
-  ): Promise<void> => {
-    const {
-      url,
-      imageUrl,
-      itemIndex,
-    } = req.body;
-
-    let targetImageUrl =
-      '';
-
-    if (
-      imageUrl &&
-      typeof imageUrl ===
-        'string'
-    ) {
-      try {
-        const parsed =
-          new URL(imageUrl);
-
-        const host =
-          parsed.hostname.toLowerCase();
-
-        const isAllowedHost =
-          (
-            host.endsWith(
-              'cdninstagram.com'
-            ) &&
-            !host.includes(
-              'static.cdninstagram.com'
-            )
-          ) ||
-          host.endsWith(
-            'fbcdn.net'
-          ) ||
-          host.endsWith(
-            'lookaside.fbsbx.com'
-          );
-
-        if (isAllowedHost) {
-          targetImageUrl =
-            imageUrl;
-        }
-      } catch {}
-    }
-
-    if (
-      !targetImageUrl &&
-      url &&
-      typeof url === 'string'
-    ) {
-      const safety =
-        await validateUrlSafety(
-          url
-        );
-
-      if (
-        safety.safe &&
-        safety.platform ===
-          'instagram'
-      ) {
-        const extraction =
-          await extractInstagramWithPlaywright(
-            url
-          );
-
-        const targetIndex =
-          typeof itemIndex ===
-          'number'
-            ? itemIndex
-            : 0;
-
-        const item =
-          extraction.items?.[
-            targetIndex
-          ];
-
-        if (
-          item &&
-          item.type ===
-            'image'
-        ) {
-          targetImageUrl =
-            item.url;
-        }
-      }
-    }
-
-    if (!targetImageUrl) {
-      res.status(400).json({
-        success: false,
-        message:
-          'Foto Instagram ini tidak dapat diproses saat ini.',
-      });
-      return;
-    }
-
-    try {
-      const parsed =
-        new URL(
-          targetImageUrl
-        );
-
-      const controller =
-        new AbortController();
-
-      const timer =
-        setTimeout(
-          () =>
-            controller.abort(),
-          20000
-        );
-
-      const imgResponse =
-        await fetch(
-          targetImageUrl,
-          {
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
-
-              Accept:
-                'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-            },
-
-            signal:
-              controller.signal,
-          }
-        );
-
-      clearTimeout(timer);
-
-      if (
-        !imgResponse.ok
-      ) {
-        throw new Error(
-          `Upstream status ${imgResponse.status}`
-        );
-      }
-
-      const buffer =
-        Buffer.from(
-          await imgResponse.arrayBuffer()
-        );
-
-      if (
-        buffer.length >
-        MAX_FILE_SIZE_MB *
-          1024 *
-          1024
-      ) {
-        res.status(400).json({
-          success: false,
-          message:
-            'File terlalu besar untuk diproses.',
-        });
-        return;
-      }
-
-      const contentType =
-        imgResponse.headers.get(
-          'content-type'
-        ) ||
-        'image/jpeg';
-
-      let fileExt = 'jpg';
-
-      if (
-        contentType.includes(
-          'webp'
-        )
-      ) {
-        fileExt = 'webp';
-      } else if (
-        contentType.includes(
-          'png'
-        )
-      ) {
-        fileExt = 'png';
-      }
-
-      const indexSuffix =
-        typeof itemIndex ===
-        'number'
-          ? `_${itemIndex + 1}`
-          : '';
-
-      const filename =
-        sanitizeFilename(
-          `Letsedrop_Instagram_Photo${indexSuffix}`,
-          fileExt
-        );
-
-      res.setHeader(
-        'Content-Type',
-        contentType
-      );
-
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${filename}"`
-      );
-
-      res.setHeader(
-        'Content-Length',
-        buffer.length
-      );
-
-      res.send(buffer);
-
-      console.log(
-        `[DOWNLOAD IMAGE] ${parsed.hostname}`
-      );
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : String(err);
-
-      console.error(
-        '[Download Image Error]',
-        msg
-      );
-
-      if (
-        !res.headersSent
-      ) {
-        res.status(500).json({
-          success: false,
-          message:
-            'Foto Instagram ini tidak dapat diproses saat ini.',
-        });
-      }
-    }
-  }
-);
-
-// ============================================================
-// DOWNLOAD CAROUSEL MEDIA
-//
-// Endpoint tambahan untuk frontend.
-// Bisa menerima mediaUrl langsung dari hasil Analyze.
-// ============================================================
-
-app.post(
-  '/api/download-carousel',
-  async (
-    req: Request,
-    res: Response
-  ): Promise<void> => {
-    const {
-      mediaUrl,
-      type,
-      itemIndex,
-    } = req.body;
-
-    if (
-      !mediaUrl ||
-      typeof mediaUrl !==
-        'string'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'URL media diperlukan.',
-      });
-      return;
-    }
-
-    if (
-      type !== 'image' &&
-      type !== 'video'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'Jenis media tidak valid.',
-      });
-      return;
-    }
-
-    try {
-      const parsed =
-        new URL(mediaUrl);
-
-      const host =
-        parsed.hostname.toLowerCase();
-
-      const allowed =
-        (
-          host.endsWith(
-            'cdninstagram.com'
-          ) &&
-          !host.includes(
-            'static.cdninstagram.com'
-          )
-        ) ||
-        host.endsWith(
-          'fbcdn.net'
-        ) ||
-        host.endsWith(
-          'lookaside.fbsbx.com'
-        );
-
-      if (!allowed) {
-        res.status(400).json({
-          success: false,
-          message:
-            'Host media tidak diizinkan.',
-        });
-        return;
-      }
-
-      const controller =
-        new AbortController();
-
-      const timer =
-        setTimeout(
-          () =>
-            controller.abort(),
-          30000
-        );
-
-      const upstream =
-        await fetch(
-          mediaUrl,
-          {
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36',
-
-              Accept:
-                type === 'video'
-                  ? 'video/mp4,video/*,*/*;q=0.8'
-                  : 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-            },
-
-            signal:
-              controller.signal,
-          }
-        );
-
-      clearTimeout(timer);
-
-      if (!upstream.ok) {
-        throw new Error(
-          `Upstream status ${upstream.status}`
-        );
-      }
-
-      const buffer =
-        Buffer.from(
-          await upstream.arrayBuffer()
-        );
-
-      if (
-        buffer.length >
-        MAX_FILE_SIZE_MB *
-          1024 *
-          1024
-      ) {
-        res.status(400).json({
-          success: false,
-          message:
-            'File terlalu besar.',
-        });
-        return;
-      }
-
-      const contentType =
-        upstream.headers.get(
-          'content-type'
-        ) ||
-        (type === 'video'
-          ? 'video/mp4'
-          : 'image/jpeg');
-
-      let ext =
-        type === 'video'
-          ? 'mp4'
-          : 'jpg';
-
-      if (
-        contentType.includes(
-          'webp'
-        )
-      ) {
-        ext = 'webp';
-      } else if (
-        contentType.includes(
-          'png'
-        )
-      ) {
-        ext = 'png';
-      } else if (
-        contentType.includes(
-          'webm'
-        )
-      ) {
-        ext = 'webm';
-      }
-
-      const suffix =
-        typeof itemIndex ===
-        'number'
-          ? `_${itemIndex + 1}`
-          : '';
-
-      const filename =
-        sanitizeFilename(
-          `Letsedrop_Instagram_${type}${suffix}`,
-          ext
-        );
-
-      res.setHeader(
-        'Content-Type',
-        contentType
-      );
-
-      res.setHeader(
-        'Content-Disposition',
-        `attachment; filename="${filename}"`
-      );
-
-      res.setHeader(
-        'Content-Length',
-        buffer.length
-      );
-
-      res.send(buffer);
-    } catch (err: unknown) {
-      const msg =
-        err instanceof Error
-          ? err.message
-          : String(err);
-
-      console.error(
-        '[Carousel Download Error]',
-        msg
-      );
-
-      if (
-        !res.headersSent
-      ) {
-        res.status(500).json({
-          success: false,
-          message:
-            'Media carousel tidak dapat didownload saat ini.',
-        });
-      }
-    }
-  }
-);
-
-// ============================================================
-// DEBUG INSTAGRAM
-// ============================================================
-
-app.get(
-  '/api/debug-instagram',
-  async (
-    req: Request,
-    res: Response
-  ): Promise<void> => {
-    const rawUrl =
-      req.query.url;
-
-    if (
-      !rawUrl ||
-      typeof rawUrl !==
-        'string'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'Query parameter url diperlukan.',
-      });
-      return;
-    }
-
-    const safety =
-      await validateUrlSafety(
-        rawUrl
-      );
-
-    if (
-      !safety.safe ||
-      safety.platform !==
-        'instagram'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'URL harus berupa URL Instagram publik yang valid dan aman.',
-      });
-      return;
-    }
-
-    let canonicalUrl =
-      rawUrl.trim();
-
-    try {
-      const u =
-        new URL(
-          canonicalUrl
-        );
-
-      u.search = '';
-
-      canonicalUrl =
-        u.toString();
-    } catch {}
-
-    const extraction =
-      await extractInstagramWithPlaywright(
-        canonicalUrl
-      );
-
-    res.json({
-      success:
-        extraction.success,
-      url:
-        canonicalUrl,
-      isVideoPost:
-        extraction.isVideoPost ||
-        false,
-      title:
-        extraction.title ||
-        '',
-      thumbnail:
-        extraction.thumbnail ||
-        '',
-      itemCount:
-        extraction.items?.length ||
-        0,
-      items:
-        extraction.items ||
-        [],
-      error:
-        extraction.error ||
-        null,
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.message ||
+        "Gagal memproses URL.",
     });
   }
-);
+});
 
-// ============================================================
-// CLEANUP TEMP FILES
-// ============================================================
+/* =========================
+   DOWNLOAD VIDEO
+========================= */
 
-setInterval(() => {
+app.post("/api/download", async (req, res) => {
+  let tempDir: string | null = null;
+
   try {
-    const now =
-      Date.now();
+    const parsed =
+      DownloadSchema.parse(req.body);
 
-    const files =
-      fs.readdirSync(
-        TEMP_DIR
+    tempDir =
+      await fs.mkdtemp(
+        path.join(
+          os.tmpdir(),
+          "letsedrop-download-"
+        )
       );
 
-    for (const file of files) {
-      const fullPath =
-        path.join(
-          TEMP_DIR,
-          file
-        );
+    await runYtDlp(
+      parsed.url,
+      tempDir
+    );
 
-      const stat =
-        fs.statSync(
-          fullPath
-        );
+    const files =
+      await fs.readdir(tempDir);
 
-      if (
-        now - stat.mtimeMs >
-        15 * 60 * 1000
-      ) {
-        fs.unlinkSync(
-          fullPath
+    const mediaFiles =
+      files.filter(
+        (file) =>
+          !file.endsWith(".part") &&
+          !file.endsWith(".ytdl")
+      );
+
+    if (!mediaFiles.length) {
+      throw new Error(
+        "File hasil download tidak ditemukan."
+      );
+    }
+
+    const filename =
+      mediaFiles[0];
+
+    const filePath =
+      path.join(
+        tempDir,
+        filename
+      );
+
+    const stat =
+      await fs.stat(filePath);
+
+    res.setHeader(
+      "Content-Length",
+      stat.size
+    );
+
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="${safeFilename(
+        filename
+      )}"`
+    );
+
+    res.sendFile(filePath, async () => {
+      if (tempDir) {
+        await fs.rm(
+          tempDir,
+          {
+            recursive: true,
+            force: true,
+          }
         );
       }
+    });
+
+    return;
+  } catch (error: any) {
+    if (tempDir) {
+      await fs.rm(
+        tempDir,
+        {
+          recursive: true,
+          force: true,
+        }
+      ).catch(() => {});
     }
-  } catch {}
-}, 10 * 60 * 1000);
 
-// ============================================================
-// START SERVER
-// ============================================================
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.stderr ||
+        error?.message ||
+        "Gagal mendownload media.",
+    });
+  }
+});
 
-app.listen(
-  PORT,
-  () => {
-    console.log(
-      `[Letsedrop Server] Running on port ${PORT}`
-    );
+/* =========================
+   DOWNLOAD INSTAGRAM MEDIA
+========================= */
 
-    console.log(
-      `[Letsedrop Server] Temp directory: ${TEMP_DIR}`
-    );
+app.post(
+  "/api/download-carousel",
+  async (req, res) => {
+    try {
+      const body = z
+        .object({
+          url: z.string().url(),
+          type: z.enum([
+            "image",
+            "video",
+          ]),
+        })
+        .parse(req.body);
 
-    console.log(
-      `[Letsedrop Server] Chromium: ${
-        process.env.CHROMIUM_PATH ||
-        '/usr/bin/chromium'
-      }`
-    );
+      const result =
+        await downloadRemoteInstagramMedia(
+          body.url
+        );
+
+      const extension =
+        body.type === "video"
+          ? "mp4"
+          : result.contentType.includes(
+              "png"
+            )
+          ? "png"
+          : "jpg";
+
+      const filename =
+        `letsedrop-${crypto
+          .randomBytes(4)
+          .toString("hex")}.${extension}`;
+
+      res.setHeader(
+        "Content-Type",
+        result.contentType
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+
+      res.send(result.buffer);
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        message:
+          error?.message ||
+          "Gagal mendownload media Instagram.",
+      });
+    }
   }
 );
+
+/* =========================
+   DOWNLOAD IMAGE
+========================= */
+
+app.post(
+  "/api/download-image",
+  async (req, res) => {
+    try {
+      const body = z
+        .object({
+          url: z.string().url(),
+        })
+        .parse(req.body);
+
+      const result =
+        await downloadRemoteInstagramMedia(
+          body.url
+        );
+
+      const extension =
+        result.contentType.includes("png")
+          ? "png"
+          : result.contentType.includes("webp")
+          ? "webp"
+          : "jpg";
+
+      const filename =
+        `letsedrop-${crypto
+          .randomBytes(4)
+          .toString("hex")}.${extension}`;
+
+      res.setHeader(
+        "Content-Type",
+        result.contentType
+      );
+
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${filename}"`
+      );
+
+      res.send(result.buffer);
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        message:
+          error?.message ||
+          "Gagal mendownload gambar.",
+      });
+    }
+  }
+);
+
+/* =========================
+   START
+========================= */
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(
+    `Letsedrop backend running on port ${PORT}`
+  );
+});

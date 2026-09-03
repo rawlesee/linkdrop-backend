@@ -120,6 +120,24 @@ const SUPPORTED_DOMAINS: Record<string, RegExp> = {
 };
 
 /* =========================================================
+   ALLOWED IMAGE HOSTS
+   ========================================================= */
+
+function isAllowedInstagramImageHost(
+  hostname: string
+): boolean {
+  const host =
+    hostname.toLowerCase();
+
+  return (
+    host === 'cdninstagram.com' ||
+    host.endsWith('.cdninstagram.com') ||
+    host === 'fbcdn.net' ||
+    host.endsWith('.fbcdn.net')
+  );
+}
+
+/* =========================================================
    COMMAND TYPES
    ========================================================= */
 
@@ -144,7 +162,8 @@ export class CommandExecutionError extends Error {
   ) {
     super(message);
 
-    this.name = 'CommandExecutionError';
+    this.name =
+      'CommandExecutionError';
 
     this.code = code;
     this.stdout = stdout;
@@ -165,7 +184,8 @@ async function validateUrlSafety(
   error?: string;
 }> {
   try {
-    const parsed = new URL(inputUrl);
+    const parsed =
+      new URL(inputUrl);
 
     if (
       parsed.protocol !== 'http:' &&
@@ -178,15 +198,21 @@ async function validateUrlSafety(
       };
     }
 
-    const hostname = parsed.hostname.toLowerCase();
+    const hostname =
+      parsed.hostname.toLowerCase();
 
-    let matchedPlatform: string | undefined;
+    let matchedPlatform:
+      string | undefined;
 
-    for (const [platform, regex] of Object.entries(
+    for (const [
+      platform,
+      regex,
+    ] of Object.entries(
       SUPPORTED_DOMAINS
     )) {
       if (regex.test(hostname)) {
-        matchedPlatform = platform;
+        matchedPlatform =
+          platform;
         break;
       }
     }
@@ -194,23 +220,31 @@ async function validateUrlSafety(
     if (!matchedPlatform) {
       return {
         safe: false,
-        error: 'Platform ini belum didukung.',
+        error:
+          'Platform ini belum didukung.',
       };
     }
 
-    const addresses = await dns.lookup(hostname, {
-      all: true,
-    });
+    const addresses =
+      await dns.lookup(
+        hostname,
+        {
+          all: true,
+        }
+      );
 
     for (const addr of addresses) {
-      const ip = addr.address;
+      const ip =
+        addr.address;
 
       if (
         ip.startsWith('127.') ||
         ip.startsWith('10.') ||
         ip.startsWith('192.168.') ||
         ip.startsWith('169.254.') ||
-        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(
+          ip
+        ) ||
         ip === '::1' ||
         ip.startsWith('fe80:') ||
         ip.startsWith('fc00:') ||
@@ -226,12 +260,14 @@ async function validateUrlSafety(
 
     return {
       safe: true,
-      platform: matchedPlatform,
+      platform:
+        matchedPlatform,
     };
   } catch {
     return {
       safe: false,
-      error: 'Link tidak valid.',
+      error:
+        'Link tidak valid.',
     };
   }
 }
@@ -244,22 +280,35 @@ function sanitizeFilename(
   rawTitle: string,
   ext: string
 ): string {
-  let clean = rawTitle
-    .replace(/[^a-zA-Z0-9_\-\s]/g, '')
-    .trim();
+  let clean =
+    rawTitle
+      .replace(
+        /[^a-zA-Z0-9_\-\s]/g,
+        ''
+      )
+      .trim();
 
   if (!clean) {
-    clean = 'LinkDrop_Media';
+    clean =
+      'LinkDrop_Media';
   }
 
-  clean = clean
-    .substring(0, 45)
-    .replace(/\s+/g, '_');
+  clean =
+    clean
+      .substring(0, 45)
+      .replace(
+        /\s+/g,
+        '_'
+      );
 
   const safeExt =
     ext
-      .replace(/[^a-zA-Z0-9]/g, '')
-      .toLowerCase() || 'jpg';
+      .replace(
+        /[^a-zA-Z0-9]/g,
+        ''
+      )
+      .toLowerCase() ||
+    'jpg';
 
   return `${clean}_${Date.now()
     .toString()
@@ -275,139 +324,283 @@ function runCommand(
   args: string[],
   timeoutMs = 30000
 ): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    console.log(
-      `[EXEC] Menjalankan: ${command} ${args.join(
-        ' '
-      )} (timeout: ${timeoutMs}ms)`
-    );
-
-    const child = spawn(command, args, {
-      shell: false,
-      windowsHide: true,
-    });
-
-    let stdout = '';
-    let stderr = '';
-    let timedOut = false;
-    let settled = false;
-
-    const timer = setTimeout(() => {
-      if (settled) return;
-
-      timedOut = true;
-
-      console.error(
-        `[TIMEOUT] Perintah ${command} dimatikan setelah ${timeoutMs}ms`
+  return new Promise(
+    (
+      resolve,
+      reject
+    ) => {
+      console.log(
+        `[EXEC] Menjalankan: ${command} ${args.join(
+          ' '
+        )} (timeout: ${timeoutMs}ms)`
       );
 
-      child.kill('SIGKILL');
-
-      settled = true;
-
-      reject(
-        new CommandExecutionError(
-          'TIMEOUT',
-          -1,
-          stdout,
-          stderr,
-          true
-        )
-      );
-    }, timeoutMs);
-
-    child.stdout?.on(
-      'data',
-      (chunk: Buffer | string) => {
-        stdout += chunk.toString();
-      }
-    );
-
-    child.stderr?.on(
-      'data',
-      (chunk: Buffer | string) => {
-        stderr += chunk.toString();
-      }
-    );
-
-    child.on(
-      'error',
-      (err: Error) => {
-        if (settled) return;
-
-        clearTimeout(timer);
-        settled = true;
-
-        console.error(
-          `[SPAWN ERROR] ${command}:`,
-          err.message
+      const child =
+        spawn(
+          command,
+          args,
+          {
+            shell: false,
+            windowsHide: true,
+          }
         );
 
-        reject(
-          new CommandExecutionError(
-            err.message,
-            -1,
-            stdout,
-            stderr,
-            false
-          )
+      let stdout = '';
+      let stderr = '';
+      let timedOut = false;
+      let settled = false;
+
+      const timer =
+        setTimeout(
+          () => {
+            if (settled)
+              return;
+
+            timedOut = true;
+
+            console.error(
+              `[TIMEOUT] Perintah ${command} dimatikan setelah ${timeoutMs}ms`
+            );
+
+            child.kill(
+              'SIGKILL'
+            );
+
+            settled = true;
+
+            reject(
+              new CommandExecutionError(
+                'TIMEOUT',
+                -1,
+                stdout,
+                stderr,
+                true
+              )
+            );
+          },
+          timeoutMs
         );
-      }
-    );
 
-    child.on(
-      'close',
-      (code: number | null) => {
-        if (settled || timedOut) return;
-
-        clearTimeout(timer);
-        settled = true;
-
-        const exitCode =
-          code !== null ? code : 1;
-
-        console.log(
-          `[EXIT] ${command} selesai dengan exit code: ${exitCode}`
-        );
-
-        if (stderr.trim()) {
-          console.log(
-            `[STDERR LOG] ${command}:`,
-            stderr.trim().substring(0, 300)
-          );
+      child.stdout?.on(
+        'data',
+        (
+          chunk:
+            | Buffer
+            | string
+        ) => {
+          stdout +=
+            chunk.toString();
         }
+      );
 
-        if (exitCode === 0) {
-          resolve({
-            stdout,
-            stderr,
-            code: exitCode,
-          });
-        } else {
-          const errorMsg =
-            stderr.trim() ||
-            `${command} gagal dengan exit code ${exitCode}`;
+      child.stderr?.on(
+        'data',
+        (
+          chunk:
+            | Buffer
+            | string
+        ) => {
+          stderr +=
+            chunk.toString();
+        }
+      );
+
+      child.on(
+        'error',
+        (
+          err: Error
+        ) => {
+          if (settled)
+            return;
+
+          clearTimeout(
+            timer
+          );
+
+          settled = true;
+
+          console.error(
+            `[SPAWN ERROR] ${command}:`,
+            err.message
+          );
 
           reject(
             new CommandExecutionError(
-              errorMsg,
-              exitCode,
+              err.message,
+              -1,
               stdout,
               stderr,
               false
             )
           );
         }
-      }
-    );
-  });
+      );
+
+      child.on(
+        'close',
+        (
+          code: number | null
+        ) => {
+          if (
+            settled ||
+            timedOut
+          ) {
+            return;
+          }
+
+          clearTimeout(
+            timer
+          );
+
+          settled = true;
+
+          const exitCode =
+            code !== null
+              ? code
+              : 1;
+
+          console.log(
+            `[EXIT] ${command} selesai dengan exit code: ${exitCode}`
+          );
+
+          if (
+            stderr.trim()
+          ) {
+            console.log(
+              `[STDERR LOG] ${command}:`,
+              stderr
+                .trim()
+                .substring(
+                  0,
+                  300
+                )
+            );
+          }
+
+          if (
+            exitCode === 0
+          ) {
+            resolve({
+              stdout,
+              stderr,
+              code:
+                exitCode,
+            });
+          } else {
+            const errorMsg =
+              stderr.trim() ||
+              `${command} gagal dengan exit code ${exitCode}`;
+
+            reject(
+              new CommandExecutionError(
+                errorMsg,
+                exitCode,
+                stdout,
+                stderr,
+                false
+              )
+            );
+          }
+        }
+      );
+    }
+  );
 }
 
 /* =========================================================
-   INSTAGRAM SINGLE PHOTO EXTRACTOR
+   HTML ENTITY DECODER
    ========================================================= */
 
-async function extractInstagramSinglePhoto(
+function decodeHtmlEntities(
+  value: string
+): string {
+  return value
+    .replace(
+      /&amp;/gi,
+      '&'
+    )
+    .replace(
+      /&quot;/gi,
+      '"'
+    )
+    .replace(
+      /&#39;/gi,
+      "'"
+    )
+    .replace(
+      /&#x27;/gi,
+      "'"
+    )
+    .replace(
+      /&lt;/gi,
+      '<'
+    )
+    .replace(
+      /&gt;/gi,
+      '>'
+    );
+}
+
+/* =========================================================
+   META TAG EXTRACTOR
+   ========================================================= */
+
+function getMetaContent(
+  html: string,
+  property: string
+): string {
+  const escaped =
+    property.replace(
+      /[-/\\^$*+?.()|[\]{}]/g,
+      '\\$&'
+    );
+
+  const patterns = [
+    new RegExp(
+      `<meta[^>]+property=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`,
+      'i'
+    ),
+
+    new RegExp(
+      `<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${escaped}["'][^>]*>`,
+      'i'
+    ),
+
+    new RegExp(
+      `<meta[^>]+name=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`,
+      'i'
+    ),
+
+    new RegExp(
+      `<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${escaped}["'][^>]*>`,
+      'i'
+    ),
+  ];
+
+  for (
+    const pattern of patterns
+  ) {
+    const match =
+      html.match(pattern);
+
+    if (
+      match &&
+      match[1]
+    ) {
+      return decodeHtmlEntities(
+        match[1]
+      );
+    }
+  }
+
+  return '';
+}
+
+/* =========================================================
+   INSTAGRAM HTML PHOTO EXTRACTOR
+   ========================================================= */
+
+async function extractInstagramFromHtml(
   targetUrl: string
 ): Promise<{
   isSinglePhoto: boolean;
@@ -418,49 +611,383 @@ async function extractInstagramSinglePhoto(
   error?: string;
 }> {
   try {
-    const parsed = new URL(targetUrl);
+    console.log(
+      `[INSTAGRAM HTML] Mengambil halaman publik: ${targetUrl}`
+    );
 
-    if (!parsed.pathname.includes('/p/')) {
+    const controller =
+      new AbortController();
+
+    const timeout =
+      setTimeout(
+        () =>
+          controller.abort(),
+        20000
+      );
+
+    const response =
+      await fetch(
+        targetUrl,
+        {
+          method: 'GET',
+
+          redirect:
+            'follow',
+
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+
+            'Accept-Language':
+              'en-US,en;q=0.9',
+
+            'Cache-Control':
+              'no-cache',
+
+            Pragma:
+              'no-cache',
+          },
+
+          signal:
+            controller.signal,
+        }
+      );
+
+    clearTimeout(
+      timeout
+    );
+
+    if (
+      !response.ok
+    ) {
       return {
-        isSinglePhoto: false,
+        isSinglePhoto:
+          false,
+
+        error:
+          `Instagram mengembalikan HTTP ${response.status}.`,
       };
+    }
+
+    const finalUrl =
+      response.url;
+
+    if (
+      finalUrl.includes(
+        '/accounts/login'
+      )
+    ) {
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'Instagram mengarahkan halaman ke login.',
+      };
+    }
+
+    const html =
+      await response.text();
+
+    if (
+      !html ||
+      html.length < 100
+    ) {
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'HTML Instagram kosong.',
+      };
+    }
+
+    /*
+     * Deteksi video.
+     *
+     * og:image juga tersedia pada video,
+     * jadi jangan menganggap keberadaan og:image
+     * otomatis berarti foto.
+     */
+
+    const ogVideo =
+      getMetaContent(
+        html,
+        'og:video'
+      );
+
+    const hasVideoMarkers =
+      /"is_video"\s*:\s*true/i.test(
+        html
+      ) ||
+      /"video_versions"/i.test(
+        html
+      ) ||
+      /"video_url"/i.test(
+        html
+      );
+
+    if (
+      ogVideo ||
+      hasVideoMarkers
+    ) {
+      console.log(
+        '[INSTAGRAM HTML] Postingan terdeteksi sebagai video.'
+      );
+
+      return {
+        isSinglePhoto:
+          false,
+
+        isVideoPost:
+          true,
+      };
+    }
+
+    /*
+     * Ambil og:image.
+     */
+
+    const imageUrl =
+      getMetaContent(
+        html,
+        'og:image'
+      );
+
+    if (!imageUrl) {
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'Meta og:image tidak ditemukan pada halaman Instagram.',
+      };
+    }
+
+    let parsedImageUrl:
+      URL;
+
+    try {
+      parsedImageUrl =
+        new URL(
+          imageUrl
+        );
+    } catch {
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'URL og:image Instagram tidak valid.',
+      };
+    }
+
+    if (
+      parsedImageUrl.protocol !==
+        'https:' &&
+      parsedImageUrl.protocol !==
+        'http:'
+    ) {
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'Protokol gambar Instagram tidak valid.',
+      };
+    }
+
+    /*
+     * Security:
+     * hanya izinkan CDN yang memang digunakan
+     * untuk media Instagram/Meta.
+     */
+
+    if (
+      !isAllowedInstagramImageHost(
+        parsedImageUrl.hostname
+      )
+    ) {
+      console.warn(
+        `[INSTAGRAM HTML] Host gambar ditolak: ${parsedImageUrl.hostname}`
+      );
+
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'Host gambar Instagram tidak diizinkan.',
+      };
+    }
+
+    const title =
+      getMetaContent(
+        html,
+        'og:title'
+      ) ||
+      'Instagram Photo';
+
+    let ext =
+      'jpg';
+
+    const contentType =
+      getMetaContent(
+        html,
+        'og:image:type'
+      ).toLowerCase();
+
+    const pathname =
+      parsedImageUrl.pathname.toLowerCase();
+
+    if (
+      contentType.includes(
+        'png'
+      ) ||
+      pathname.endsWith(
+        '.png'
+      )
+    ) {
+      ext =
+        'png';
+    } else if (
+      contentType.includes(
+        'webp'
+      ) ||
+      pathname.endsWith(
+        '.webp'
+      )
+    ) {
+      ext =
+        'webp';
+    } else if (
+      contentType.includes(
+        'jpeg'
+      ) ||
+      pathname.endsWith(
+        '.jpeg'
+      ) ||
+      pathname.endsWith(
+        '.jpg'
+      )
+    ) {
+      ext =
+        'jpg';
     }
 
     console.log(
-      `[ANALYZE:INSTAGRAM] gallery-dl: ${targetUrl}`
+      '[INSTAGRAM HTML] og:image berhasil ditemukan.'
     );
 
-    const args = [
-      '-j',
-      '--no-download',
-      targetUrl,
-    ];
+    return {
+      isSinglePhoto:
+        true,
 
-    const result = await runCommand(
-      'gallery-dl',
-      args,
-      25000
+      title:
+        title
+          .substring(
+            0,
+            80
+          )
+          .trim() ||
+        'Instagram Photo',
+
+      photoUrl:
+        imageUrl,
+
+      ext,
+    };
+  } catch (
+    err: unknown
+  ) {
+    const errorMsg =
+      err instanceof Error
+        ? err.message
+        : String(err);
+
+    console.error(
+      '[INSTAGRAM HTML ERROR]:',
+      errorMsg
     );
 
-    const lines = result.stdout
-      .trim()
-      .split('\n')
-      .filter((line) => line.trim());
+    return {
+      isSinglePhoto:
+        false,
 
-    if (lines.length === 0) {
+      error:
+        errorMsg,
+    };
+  }
+}
+
+/* =========================================================
+   INSTAGRAM GALLERY-DL FALLBACK
+   ========================================================= */
+
+async function extractInstagramWithGalleryDl(
+  targetUrl: string
+): Promise<{
+  isSinglePhoto: boolean;
+  isVideoPost?: boolean;
+  title?: string;
+  photoUrl?: string;
+  ext?: string;
+  error?: string;
+}> {
+  try {
+    console.log(
+      `[INSTAGRAM GALLERY-DL] Fallback: ${targetUrl}`
+    );
+
+    const result =
+      await runCommand(
+        'gallery-dl',
+        [
+          '-j',
+          '--no-download',
+          targetUrl,
+        ],
+        25000
+      );
+
+    const lines =
+      result.stdout
+        .trim()
+        .split('\n')
+        .filter(
+          (line) =>
+            line.trim()
+        );
+
+    if (
+      lines.length === 0
+    ) {
       return {
-        isSinglePhoto: false,
-        error: 'Output gallery-dl kosong.',
+        isSinglePhoto:
+          false,
+
+        error:
+          'Output gallery-dl kosong.',
       };
     }
 
-    const entries: unknown[] = [];
+    const entries:
+      unknown[] = [];
 
-    for (const line of lines) {
+    for (
+      const line of lines
+    ) {
       try {
-        entries.push(JSON.parse(line));
+        entries.push(
+          JSON.parse(
+            line
+          )
+        );
       } catch {
-        // Abaikan baris non-JSON
+        // Ignore non-JSON lines
       }
     }
 
@@ -470,66 +997,78 @@ async function extractInstagramSinglePhoto(
      * Message.Directory = 2
      * Message.Url       = 3
      *
-     * Media URL ada pada entry[1].
+     * Media URL ada di entry[1].
      */
 
-    const mediaEntries = entries.filter(
-      (entry) =>
-        Array.isArray(entry) &&
-        entry.length >= 2 &&
-        entry[0] === 3 &&
-        typeof entry[1] === 'string'
-    );
+    const mediaEntries =
+      entries.filter(
+        (entry) =>
+          Array.isArray(
+            entry
+          ) &&
+          entry.length >= 2 &&
+          entry[0] === 3 &&
+          typeof entry[1] ===
+            'string'
+      );
 
     console.log(
       `[gallery-dl] Total records: ${entries.length}, media URLs: ${mediaEntries.length}`
     );
 
-    if (mediaEntries.length === 0) {
+    if (
+      mediaEntries.length ===
+      0
+    ) {
       return {
-        isSinglePhoto: false,
+        isSinglePhoto:
+          false,
+
         error:
           'Tidak ditemukan URL media dalam output gallery-dl.',
       };
     }
 
-    /*
-     * Lebih dari satu media URL =
-     * Instagram Carousel.
-     */
-
-    if (mediaEntries.length > 1) {
-      console.log(
-        '[gallery-dl] Carousel terdeteksi.'
-      );
-
+    if (
+      mediaEntries.length >
+      1
+    ) {
       return {
-        isSinglePhoto: false,
+        isSinglePhoto:
+          false,
+
         error:
           'Postingan carousel belum diaktifkan pada tahap ini.',
       };
     }
 
-    const mediaEntry = mediaEntries[0];
+    const mediaEntry =
+      mediaEntries[0];
 
     if (
-      !Array.isArray(mediaEntry) ||
+      !Array.isArray(
+        mediaEntry
+      ) ||
       mediaEntry.length < 3
     ) {
       return {
-        isSinglePhoto: false,
+        isSinglePhoto:
+          false,
+
         error:
           'Format media gallery-dl tidak valid.',
       };
     }
 
     const directMediaUrl =
-      typeof mediaEntry[1] === 'string'
+      typeof mediaEntry[1] ===
+      'string'
         ? mediaEntry[1]
         : '';
 
     const metadata =
-      typeof mediaEntry[2] === 'object' &&
+      typeof mediaEntry[2] ===
+        'object' &&
       mediaEntry[2] !== null
         ? (mediaEntry[2] as Record<
             string,
@@ -538,73 +1077,24 @@ async function extractInstagramSinglePhoto(
         : {};
 
     const typename =
-      typeof metadata.typename === 'string'
+      typeof metadata.typename ===
+      'string'
         ? metadata.typename
         : '';
 
-    let description = 'Instagram Photo';
-
     if (
-      typeof metadata.description ===
-      'string'
-    ) {
-      description = metadata.description;
-    } else if (
-      typeof metadata.caption === 'string'
-    ) {
-      description = metadata.caption;
-    }
-
-    let extension = 'jpg';
-
-    if (
-      typeof metadata.extension ===
-      'string'
-    ) {
-      extension = metadata.extension;
-    } else {
-      try {
-        const mediaParsed = new URL(
-          directMediaUrl
-        );
-
-        const pathname =
-          mediaParsed.pathname.toLowerCase();
-
-        if (pathname.endsWith('.png')) {
-          extension = 'png';
-        } else if (
-          pathname.endsWith('.webp')
-        ) {
-          extension = 'webp';
-        } else if (
-          pathname.endsWith('.jpeg')
-        ) {
-          extension = 'jpeg';
-        } else if (
-          pathname.endsWith('.jpg')
-        ) {
-          extension = 'jpg';
-        }
-      } catch {
-        // Default jpg
-      }
-    }
-
-    /*
-     * Kalau media ternyata video,
-     * biarkan yt-dlp yang menangani.
-     */
-
-    if (
-      typename === 'GraphVideo' ||
+      typename ===
+        'GraphVideo' ||
       /\.mp4(?:$|\?)/i.test(
         directMediaUrl
       )
     ) {
       return {
-        isSinglePhoto: false,
-        isVideoPost: true,
+        isSinglePhoto:
+          false,
+
+        isVideoPost:
+          true,
       };
     }
 
@@ -617,35 +1107,91 @@ async function extractInstagramSinglePhoto(
       )
     ) {
       return {
-        isSinglePhoto: false,
+        isSinglePhoto:
+          false,
+
         error:
           'URL gambar tidak valid.',
       };
     }
 
-    console.log(
-      '[gallery-dl] Single photo berhasil ditemukan.'
-    );
+    try {
+      const parsed =
+        new URL(
+          directMediaUrl
+        );
+
+      if (
+        !isAllowedInstagramImageHost(
+          parsed.hostname
+        )
+      ) {
+        return {
+          isSinglePhoto:
+            false,
+
+          error:
+            'Host gambar tidak diizinkan.',
+        };
+      }
+    } catch {
+      return {
+        isSinglePhoto:
+          false,
+
+        error:
+          'URL gambar tidak valid.',
+      };
+    }
+
+    const description =
+      typeof metadata.description ===
+      'string'
+        ? metadata.description
+        : typeof metadata.caption ===
+          'string'
+        ? metadata.caption
+        : 'Instagram Photo';
+
+    let extension =
+      'jpg';
+
+    if (
+      typeof metadata.extension ===
+      'string'
+    ) {
+      extension =
+        metadata.extension;
+    }
 
     return {
-      isSinglePhoto: true,
+      isSinglePhoto:
+        true,
 
       title:
         description
-          .substring(0, 50)
+          .substring(
+            0,
+            80
+          )
           .trim() ||
         'Instagram Photo',
 
-      photoUrl: directMediaUrl,
+      photoUrl:
+        directMediaUrl,
 
-      ext: extension
-        .replace(
-          /[^a-zA-Z0-9]/g,
-          ''
-        )
-        .toLowerCase() || 'jpg',
+      ext:
+        extension
+          .replace(
+            /[^a-zA-Z0-9]/g,
+            ''
+          )
+          .toLowerCase() ||
+        'jpg',
     };
-  } catch (err: unknown) {
+  } catch (
+    err: unknown
+  ) {
     const errorMsg =
       err instanceof Error
         ? err.message
@@ -657,10 +1203,83 @@ async function extractInstagramSinglePhoto(
     );
 
     return {
-      isSinglePhoto: false,
-      error: errorMsg,
+      isSinglePhoto:
+        false,
+
+      error:
+        errorMsg,
     };
   }
+}
+
+/* =========================================================
+   INSTAGRAM PHOTO MASTER EXTRACTOR
+   ========================================================= */
+
+async function extractInstagramSinglePhoto(
+  targetUrl: string
+): Promise<{
+  isSinglePhoto: boolean;
+  isVideoPost?: boolean;
+  title?: string;
+  photoUrl?: string;
+  ext?: string;
+  error?: string;
+}> {
+  const htmlResult =
+    await extractInstagramFromHtml(
+      targetUrl
+    );
+
+  if (
+    htmlResult.isSinglePhoto &&
+    htmlResult.photoUrl
+  ) {
+    return htmlResult;
+  }
+
+  /*
+   * Kalau HTML sudah mendeteksi video,
+   * jangan lanjutkan sebagai foto.
+   */
+
+  if (
+    htmlResult.isVideoPost
+  ) {
+    return htmlResult;
+  }
+
+  /*
+   * Fallback gallery-dl.
+   */
+
+  const galleryResult =
+    await extractInstagramWithGalleryDl(
+      targetUrl
+    );
+
+  if (
+    galleryResult.isSinglePhoto &&
+    galleryResult.photoUrl
+  ) {
+    return galleryResult;
+  }
+
+  if (
+    galleryResult.isVideoPost
+  ) {
+    return galleryResult;
+  }
+
+  return {
+    isSinglePhoto:
+      false,
+
+    error:
+      galleryResult.error ||
+      htmlResult.error ||
+      'Foto Instagram tidak dapat ditemukan.',
+  };
 }
 
 /* =========================================================
@@ -674,11 +1293,127 @@ app.get(
     res: Response
   ): void => {
     res.json({
-      status: 'ok',
-      service: 'linkdrop-backend',
-      time: new Date().toISOString(),
+      status:
+        'ok',
+
+      service:
+        'linkdrop-backend',
+
+      time:
+        new Date().toISOString(),
+
       activeDownloads:
         activeDownloadsCount,
+    });
+  }
+);
+
+/* =========================================================
+   DEBUG INSTAGRAM
+   ========================================================= */
+
+app.get(
+  '/api/debug-instagram',
+  async (
+    req: Request,
+    res: Response
+  ): Promise<void> => {
+    const rawUrl =
+      req.query.url;
+
+    if (
+      !rawUrl ||
+      typeof rawUrl !==
+        'string'
+    ) {
+      res.status(400).json({
+        success:
+          false,
+
+        message:
+          'Query parameter url diperlukan.',
+      });
+
+      return;
+    }
+
+    const safety =
+      await validateUrlSafety(
+        rawUrl
+      );
+
+    if (
+      !safety.safe ||
+      safety.platform !==
+        'instagram'
+    ) {
+      res.status(400).json({
+        success:
+          false,
+
+        message:
+          'URL Instagram publik diperlukan.',
+      });
+
+      return;
+    }
+
+    let canonicalUrl =
+      rawUrl.trim();
+
+    try {
+      const u =
+        new URL(
+          canonicalUrl
+        );
+
+      u.search =
+        '';
+
+      canonicalUrl =
+        u.toString();
+    } catch {
+      canonicalUrl =
+        rawUrl.trim();
+    }
+
+    const result =
+      await extractInstagramSinglePhoto(
+        canonicalUrl
+      );
+
+    res.json({
+      success:
+        true,
+
+      url:
+        canonicalUrl,
+
+      extractor: {
+        isSinglePhoto:
+          result.isSinglePhoto,
+
+        isVideoPost:
+          result.isVideoPost ||
+          false,
+
+        title:
+          result.title ||
+          '',
+
+        photoUrlFound:
+          Boolean(
+            result.photoUrl
+          ),
+
+        ext:
+          result.ext ||
+          '',
+
+        error:
+          result.error ||
+          '',
+      },
     });
   }
 );
@@ -693,14 +1428,18 @@ app.get(
     req: Request,
     res: Response
   ): Promise<void> => {
-    const rawUrl = req.query.url;
+    const rawUrl =
+      req.query.url;
 
     if (
       !rawUrl ||
-      typeof rawUrl !== 'string'
+      typeof rawUrl !==
+        'string'
     ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           'Query parameter url diperlukan.',
       });
@@ -709,14 +1448,19 @@ app.get(
     }
 
     const safety =
-      await validateUrlSafety(rawUrl);
+      await validateUrlSafety(
+        rawUrl
+      );
 
     if (
       !safety.safe ||
-      safety.platform !== 'instagram'
+      safety.platform !==
+        'instagram'
     ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           'URL Instagram publik diperlukan.',
       });
@@ -737,44 +1481,64 @@ app.get(
         );
 
       res.json({
-        success: true,
+        success:
+          true,
+
         command:
           'gallery-dl -j --no-download <URL>',
-        exitCode: result.code,
-        timedOut: false,
+
+        exitCode:
+          result.code,
+
+        timedOut:
+          false,
+
         stdout:
           result.stdout.substring(
             0,
             12000
           ),
+
         stderr:
           result.stderr.substring(
             0,
             6000
           ),
       });
-    } catch (err: unknown) {
+    } catch (
+      err: unknown
+    ) {
       if (
         err instanceof
         CommandExecutionError
       ) {
         res.json({
-          success: false,
+          success:
+            false,
+
           command:
             'gallery-dl -j --no-download <URL>',
-          exitCode: err.code,
-          timedOut: err.timedOut,
+
+          exitCode:
+            err.code,
+
+          timedOut:
+            err.timedOut,
+
           stdout:
             err.stdout.substring(
               0,
               12000
             ),
+
           stderr:
             err.stderr.substring(
               0,
               6000
             ),
-          message: err.message,
+
+          message:
+            err.message,
         });
 
         return;
@@ -786,339 +1550,12 @@ app.get(
           : String(err);
 
       res.status(500).json({
-        success: false,
+        success:
+          false,
+
         message,
       });
     }
-  }
-);
-
-/* =========================================================
-   DEBUG INSTAGRAM
-   ========================================================= */
-
-app.get(
-  '/api/debug-instagram',
-  async (
-    req: Request,
-    res: Response
-  ): Promise<void> => {
-    const rawUrl = req.query.url;
-
-    if (
-      !rawUrl ||
-      typeof rawUrl !== 'string'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'Query parameter url diperlukan.',
-      });
-
-      return;
-    }
-
-    const safety =
-      await validateUrlSafety(rawUrl);
-
-    if (
-      !safety.safe ||
-      safety.platform !== 'instagram'
-    ) {
-      res.status(400).json({
-        success: false,
-        message:
-          'URL harus berupa URL Instagram publik yang valid dan aman.',
-      });
-
-      return;
-    }
-
-    let canonicalUrl =
-      rawUrl.trim();
-
-    try {
-      const u = new URL(
-        canonicalUrl
-      );
-
-      u.search = '';
-
-      canonicalUrl = u.toString();
-    } catch {
-      canonicalUrl = rawUrl.trim();
-    }
-
-    interface TestResult {
-      name: string;
-      exitCode?: number;
-      timedOut?: boolean;
-      stdout?: string;
-      stderr?: string;
-      status?: number;
-      finalUrl?: string;
-      contentType?: string;
-      redirectedToLogin?: boolean;
-      error?: string;
-    }
-
-    const tests: TestResult[] =
-      [];
-
-    const truncate = (
-      value: string,
-      max: number
-    ): string => {
-      if (!value) return '';
-
-      return value.length > max
-        ? value.substring(0, max) +
-            '\n... [TRUNCATED]'
-        : value;
-    };
-
-    /* -------------------------
-       TEST 1
-       ------------------------- */
-
-    try {
-      const result =
-        await runCommand(
-          'gallery-dl',
-          [
-            '-j',
-            '--no-download',
-            canonicalUrl,
-          ],
-          20000
-        );
-
-      tests.push({
-        name:
-          'gallery-dl-basic',
-        exitCode: result.code,
-        timedOut: false,
-        stdout: truncate(
-          result.stdout,
-          8192
-        ),
-        stderr: truncate(
-          result.stderr,
-          4096
-        ),
-      });
-    } catch (err: unknown) {
-      if (
-        err instanceof
-        CommandExecutionError
-      ) {
-        tests.push({
-          name:
-            'gallery-dl-basic',
-          exitCode: err.code,
-          timedOut:
-            err.timedOut,
-          stdout: truncate(
-            err.stdout,
-            8192
-          ),
-          stderr: truncate(
-            err.stderr ||
-              err.message,
-            4096
-          ),
-        });
-      } else {
-        const message =
-          err instanceof Error
-            ? err.message
-            : String(err);
-
-        tests.push({
-          name:
-            'gallery-dl-basic',
-          exitCode: 1,
-          timedOut: false,
-          stdout: '',
-          stderr:
-            truncate(
-              message,
-              4096
-            ),
-        });
-      }
-    }
-
-    /* -------------------------
-       TEST 2
-       ------------------------- */
-
-    try {
-      const result =
-        await runCommand(
-          'gallery-dl',
-          [
-            '-j',
-            '--no-download',
-            '--verbose',
-            canonicalUrl,
-          ],
-          20000
-        );
-
-      tests.push({
-        name:
-          'gallery-dl-verbose',
-        exitCode: result.code,
-        timedOut: false,
-        stdout: truncate(
-          result.stdout,
-          8192
-        ),
-        stderr: truncate(
-          result.stderr,
-          6144
-        ),
-      });
-    } catch (err: unknown) {
-      if (
-        err instanceof
-        CommandExecutionError
-      ) {
-        tests.push({
-          name:
-            'gallery-dl-verbose',
-          exitCode: err.code,
-          timedOut:
-            err.timedOut,
-          stdout: truncate(
-            err.stdout,
-            8192
-          ),
-          stderr: truncate(
-            err.stderr ||
-              err.message,
-            6144
-          ),
-        });
-      } else {
-        const message =
-          err instanceof Error
-            ? err.message
-            : String(err);
-
-        tests.push({
-          name:
-            'gallery-dl-verbose',
-          exitCode: 1,
-          timedOut: false,
-          stdout: '',
-          stderr:
-            truncate(
-              message,
-              6144
-            ),
-        });
-      }
-    }
-
-    /* -------------------------
-       TEST 3
-       ------------------------- */
-
-    try {
-      const controller =
-        new AbortController();
-
-      const timeout =
-        setTimeout(
-          () => controller.abort(),
-          15000
-        );
-
-      const httpResponse =
-        await fetch(
-          canonicalUrl,
-          {
-            method: 'GET',
-            redirect: 'follow',
-
-            headers: {
-              'User-Agent':
-                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-
-              Accept:
-                'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-
-              'Accept-Language':
-                'en-US,en;q=0.9',
-            },
-
-            signal:
-              controller.signal,
-          }
-        );
-
-      clearTimeout(timeout);
-
-      const finalUrl =
-        httpResponse.url;
-
-      const contentType =
-        httpResponse.headers.get(
-          'content-type'
-        ) || '';
-
-      const redirectedToLogin =
-        finalUrl.includes(
-          '/accounts/login'
-        ) ||
-        finalUrl.includes(
-          'login_required'
-        );
-
-      tests.push({
-        name: 'direct-http',
-
-        status:
-          httpResponse.status,
-
-        finalUrl,
-
-        contentType,
-
-        redirectedToLogin,
-      });
-    } catch (err: unknown) {
-      const message =
-        err instanceof Error
-          ? err.message
-          : String(err);
-
-      tests.push({
-        name: 'direct-http',
-
-        status: 0,
-
-        finalUrl: '',
-
-        contentType: '',
-
-        redirectedToLogin:
-          false,
-
-        error: truncate(
-          message,
-          2048
-        ),
-      });
-    }
-
-    res.json({
-      success: true,
-      url: canonicalUrl,
-      tests,
-    });
   }
 );
 
@@ -1132,15 +1569,19 @@ app.post(
     req: Request,
     res: Response
   ): Promise<void> => {
-    const { url } =
-      req.body;
+    const {
+      url,
+    } = req.body;
 
     if (
       !url ||
-      typeof url !== 'string'
+      typeof url !==
+        'string'
     ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           'URL publik yang didukung diperlukan.',
       });
@@ -1149,11 +1590,17 @@ app.post(
     }
 
     const safety =
-      await validateUrlSafety(url);
+      await validateUrlSafety(
+        url
+      );
 
-    if (!safety.safe) {
+    if (
+      !safety.safe
+    ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           safety.error ||
           'Link tidak dapat diproses.',
@@ -1163,7 +1610,7 @@ app.post(
     }
 
     /* =====================================================
-       INSTAGRAM PHOTO
+       INSTAGRAM POST
        ===================================================== */
 
     if (
@@ -1172,7 +1619,7 @@ app.post(
       url.includes('/p/')
     ) {
       console.log(
-        `[ANALYZE] Menjalankan gallery-dl untuk Instagram: ${url}`
+        `[ANALYZE] Instagram post: ${url}`
       );
 
       const photoResult =
@@ -1180,17 +1627,21 @@ app.post(
           url
         );
 
+      /* Single Photo */
+
       if (
         photoResult.isSinglePhoto &&
         photoResult.photoUrl
       ) {
         res.json({
-          success: true,
+          success:
+            true,
 
           platform:
             'instagram',
 
-          type: 'image',
+          type:
+            'image',
 
           title:
             photoResult.title ||
@@ -1204,10 +1655,15 @@ app.post(
 
           items: [
             {
-              index: 0,
-              type: 'image',
+              index:
+                0,
+
+              type:
+                'image',
+
               url:
                 photoResult.photoUrl,
+
               ext:
                 photoResult.ext ||
                 'jpg',
@@ -1220,6 +1676,8 @@ app.post(
         return;
       }
 
+      /* Carousel */
+
       if (
         photoResult.error &&
         photoResult.error.includes(
@@ -1227,7 +1685,9 @@ app.post(
         )
       ) {
         res.status(400).json({
-          success: false,
+          success:
+            false,
+
           message:
             'Dukungan untuk Instagram Carousel sedang dalam pengembangan.',
         });
@@ -1235,11 +1695,17 @@ app.post(
         return;
       }
 
+      /* Video */
+
       if (
         photoResult.isVideoPost
       ) {
         console.log(
-          '[ANALYZE] Instagram /p/ adalah video. Lanjut yt-dlp.'
+          '[ANALYZE] Instagram post adalah video. Lanjut yt-dlp.'
+        );
+      } else {
+        console.log(
+          '[ANALYZE] Instagram photo extractor gagal, mencoba yt-dlp.'
         );
       }
     }
@@ -1276,39 +1742,57 @@ app.post(
 
       const formats = [
         {
-          id: 'best',
+          id:
+            'best',
+
           label:
             'Video MP4 (HD)',
-          extension: 'mp4',
-          quality: 'HD',
-          type: 'video',
+
+          extension:
+            'mp4',
+
+          quality:
+            'HD',
+
+          type:
+            'video',
         },
 
         {
-          id: 'audio',
+          id:
+            'audio',
+
           label:
             'Audio MP3',
-          extension: 'mp3',
+
+          extension:
+            'mp3',
+
           quality:
             'High Audio',
-          type: 'audio',
+
+          type:
+            'audio',
         },
       ];
 
       res.json({
-        success: true,
+        success:
+          true,
 
         platform:
           safety.platform,
 
-        type: 'video',
+        type:
+          'video',
 
         title:
           meta.title ||
           'LinkDrop Video',
 
         thumbnail:
-          meta.thumbnail || '',
+          meta.thumbnail ||
+          '',
 
         uploader:
           meta.uploader ||
@@ -1316,13 +1800,16 @@ app.post(
           'Publik',
 
         duration:
-          meta.duration || 0,
+          meta.duration ||
+          0,
 
         url,
 
         formats,
       });
-    } catch (err: unknown) {
+    } catch (
+      err: unknown
+    ) {
       const errorMsg =
         err instanceof Error
           ? err.message
@@ -1341,7 +1828,9 @@ app.post(
         'instagram'
       ) {
         res.status(400).json({
-          success: false,
+          success:
+            false,
+
           message:
             'Foto/video Instagram ini tidak dapat diproses saat ini.',
         });
@@ -1350,11 +1839,17 @@ app.post(
       }
 
       if (
-        lower.includes('private') ||
-        lower.includes('login')
+        lower.includes(
+          'private'
+        ) ||
+        lower.includes(
+          'login'
+        )
       ) {
         res.status(400).json({
-          success: false,
+          success:
+            false,
+
           message:
             'Media ini tidak dapat diakses karena bersifat privat atau membutuhkan login.',
         });
@@ -1363,7 +1858,9 @@ app.post(
       }
 
       res.status(500).json({
-        success: false,
+        success:
+          false,
+
         message:
           'Media tidak tersedia atau tidak dapat diproses saat ini.',
       });
@@ -1388,10 +1885,13 @@ app.post(
 
     if (
       !url ||
-      typeof url !== 'string'
+      typeof url !==
+        'string'
     ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           'URL publik yang didukung diperlukan.',
       });
@@ -1400,11 +1900,17 @@ app.post(
     }
 
     const safety =
-      await validateUrlSafety(url);
+      await validateUrlSafety(
+        url
+      );
 
-    if (!safety.safe) {
+    if (
+      !safety.safe
+    ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           safety.error,
       });
@@ -1417,7 +1923,9 @@ app.post(
       MAX_CONCURRENT_DOWNLOADS
     ) {
       res.status(503).json({
-        success: false,
+        success:
+          false,
+
         message:
           'Server sibuk. Coba beberapa saat lagi.',
       });
@@ -1428,11 +1936,13 @@ app.post(
     activeDownloadsCount++;
 
     const isAudio =
-      formatId === 'audio';
+      formatId ===
+      'audio';
 
-    const ext = isAudio
-      ? 'mp3'
-      : 'mp4';
+    const ext =
+      isAudio
+        ? 'mp3'
+        : 'mp4';
 
     const jobId =
       crypto
@@ -1445,13 +1955,15 @@ app.post(
         `${jobId}.%(ext)s`
       );
 
-    let finalFilePath = '';
+    let finalFilePath =
+      '';
 
     try {
       const args = [
         '--no-playlist',
         '--no-warnings',
         '--no-check-certificates',
+
         '--max-filesize',
         `${MAX_FILE_SIZE_MB}m`,
 
@@ -1465,7 +1977,9 @@ app.post(
         tempOutputTemplate,
       ];
 
-      if (isAudio) {
+      if (
+        isAudio
+      ) {
         args.push(
           '--extract-audio',
           '--audio-format',
@@ -1478,7 +1992,9 @@ app.post(
         );
       }
 
-      args.push(url);
+      args.push(
+        url
+      );
 
       await runCommand(
         'yt-dlp',
@@ -1492,10 +2008,13 @@ app.post(
         );
 
       const matched =
-        files.find((file) =>
-          file.startsWith(
-            jobId
-          )
+        files.find(
+          (
+            file
+          ) =>
+            file.startsWith(
+              jobId
+            )
         );
 
       if (!matched) {
@@ -1549,7 +2068,9 @@ app.post(
           finalFilePath
         );
 
-      stream.pipe(res);
+      stream.pipe(
+        res
+      );
 
       const cleanup =
         () => {
@@ -1578,7 +2099,9 @@ app.post(
         'close',
         cleanup
       );
-    } catch (err: unknown) {
+    } catch (
+      err: unknown
+    ) {
       const errorMsg =
         err instanceof Error
           ? err.message
@@ -1604,9 +2127,13 @@ app.post(
         }
       }
 
-      if (!res.headersSent) {
+      if (
+        !res.headersSent
+      ) {
         res.status(500).json({
-          success: false,
+          success:
+            false,
+
           message:
             'Gagal memproses download media.',
         });
@@ -1636,7 +2163,8 @@ app.post(
       imageUrl,
     } = req.body;
 
-    let targetImageUrl = '';
+    let targetImageUrl =
+      '';
 
     /* -----------------------------------------------------
        Re-extract dari URL Instagram asli
@@ -1644,7 +2172,8 @@ app.post(
 
     if (
       url &&
-      typeof url === 'string'
+      typeof url ===
+        'string'
     ) {
       const safety =
         await validateUrlSafety(
@@ -1672,7 +2201,7 @@ app.post(
     }
 
     /* -----------------------------------------------------
-       Fallback image URL
+       Fallback imageUrl dari frontend
        ----------------------------------------------------- */
 
     if (
@@ -1683,29 +2212,20 @@ app.post(
     ) {
       try {
         const parsed =
-          new URL(imageUrl);
-
-        const host =
-          parsed.hostname.toLowerCase();
-
-        const allowed =
-          host ===
-            'cdninstagram.com' ||
-          host.endsWith(
-            '.cdninstagram.com'
-          ) ||
-          host ===
-            'fbcdn.net' ||
-          host.endsWith(
-            '.fbcdn.net'
+          new URL(
+            imageUrl
           );
 
-        if (allowed) {
+        if (
+          isAllowedInstagramImageHost(
+            parsed.hostname
+          )
+        ) {
           targetImageUrl =
             imageUrl;
         } else {
           console.warn(
-            `[Security] Image host ditolak: ${host}`
+            `[Security] Image host ditolak: ${parsed.hostname}`
           );
         }
       } catch {
@@ -1713,9 +2233,13 @@ app.post(
       }
     }
 
-    if (!targetImageUrl) {
+    if (
+      !targetImageUrl
+    ) {
       res.status(400).json({
-        success: false,
+        success:
+          false,
+
         message:
           'Foto Instagram ini tidak dapat diproses saat ini.',
       });
@@ -1732,12 +2256,34 @@ app.post(
         '[Download Image] Mengunduh gambar...'
       );
 
+      const parsed =
+        new URL(
+          targetImageUrl
+        );
+
+      if (
+        !isAllowedInstagramImageHost(
+          parsed.hostname
+        )
+      ) {
+        res.status(400).json({
+          success:
+            false,
+
+          message:
+            'Host gambar tidak diizinkan.',
+        });
+
+        return;
+      }
+
       const controller =
         new AbortController();
 
       const timeout =
         setTimeout(
-          () => controller.abort(),
+          () =>
+            controller.abort(),
           30000
         );
 
@@ -1758,9 +2304,13 @@ app.post(
           }
         );
 
-      clearTimeout(timeout);
+      clearTimeout(
+        timeout
+      );
 
-      if (!imgResponse.ok) {
+      if (
+        !imgResponse.ok
+      ) {
         throw new Error(
           `Gagal mengambil media (${imgResponse.status})`
         );
@@ -1793,7 +2343,9 @@ app.post(
           1024
       ) {
         res.status(400).json({
-          success: false,
+          success:
+            false,
+
           message:
             'File terlalu besar untuk diproses.',
         });
@@ -1801,26 +2353,30 @@ app.post(
         return;
       }
 
-      let ext = 'jpg';
+      let ext =
+        'jpg';
 
       if (
         contentType.includes(
           'png'
         )
       ) {
-        ext = 'png';
+        ext =
+          'png';
       } else if (
         contentType.includes(
           'webp'
         )
       ) {
-        ext = 'webp';
+        ext =
+          'webp';
       } else if (
         contentType.includes(
           'jpeg'
         )
       ) {
-        ext = 'jpg';
+        ext =
+          'jpg';
       }
 
       const filename =
@@ -1844,8 +2400,12 @@ app.post(
         buffer.length
       );
 
-      res.send(buffer);
-    } catch (err: unknown) {
+      res.send(
+        buffer
+      );
+    } catch (
+      err: unknown
+    ) {
       const errorMsg =
         err instanceof Error
           ? err.message
@@ -1856,9 +2416,13 @@ app.post(
         errorMsg
       );
 
-      if (!res.headersSent) {
+      if (
+        !res.headersSent
+      ) {
         res.status(500).json({
-          success: false,
+          success:
+            false,
+
           message:
             'Foto Instagram ini tidak dapat diproses saat ini.',
         });
@@ -1871,42 +2435,51 @@ app.post(
    TEMP FILE CLEANUP
    ========================================================= */
 
-setInterval(() => {
-  try {
-    const now =
-      Date.now();
+setInterval(
+  () => {
+    try {
+      const now =
+        Date.now();
 
-    const files =
-      fs.readdirSync(
-        TEMP_DIR
-      );
-
-    for (const file of files) {
-      const fullPath =
-        path.join(
-          TEMP_DIR,
-          file
+      const files =
+        fs.readdirSync(
+          TEMP_DIR
         );
 
-      const stat =
-        fs.statSync(
-          fullPath
-        );
-
-      if (
-        now -
-          stat.mtimeMs >
-        15 * 60 * 1000
+      for (
+        const file of files
       ) {
-        fs.unlinkSync(
-          fullPath
-        );
+        const fullPath =
+          path.join(
+            TEMP_DIR,
+            file
+          );
+
+        const stat =
+          fs.statSync(
+            fullPath
+          );
+
+        if (
+          now -
+            stat.mtimeMs >
+          15 *
+            60 *
+            1000
+        ) {
+          fs.unlinkSync(
+            fullPath
+          );
+        }
       }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
-  }
-}, 10 * 60 * 1000);
+  },
+  10 *
+    60 *
+    1000
+);
 
 /* =========================================================
    START SERVER

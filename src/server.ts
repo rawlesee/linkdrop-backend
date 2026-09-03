@@ -1133,8 +1133,9 @@ app.post(
             rawUrl
           );
 
-        if (
+                if (
           apify.success &&
+          "items" in apify &&
           apify.items.length > 0
         ) {
           return res.json({

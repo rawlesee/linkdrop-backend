@@ -10,10 +10,11 @@ RUN apt-get update && apt-get install -y \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Install latest yt-dlp nightly + request impersonation support
+# Install yt-dlp nightly + request impersonation support + gallery-dl
 RUN pip3 install --break-system-packages --no-cache-dir \
     -U --pre yt-dlp \
-    curl-cffi
+    curl-cffi \
+    gallery-dl
 
 COPY package*.json ./
 

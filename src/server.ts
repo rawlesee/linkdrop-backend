@@ -1,6 +1,6 @@
 /**
  * LinkDrop Production Server
- * Instagram Media Extraction Edition
+ * Instagram Media Extraction + Playwright Edition
  */
 
 import express, { Request, Response } from 'express';
@@ -13,6 +13,7 @@ import fs from 'fs';
 import dns from 'dns/promises';
 import { URL } from 'url';
 import crypto from 'crypto';
+import { chromium } from 'playwright-core';
 
 const app = express();
 
@@ -36,6 +37,10 @@ const MAX_CONCURRENT_DOWNLOADS = parseInt(
 const TEMP_DIR = path.resolve(
   process.env.TEMP_DIR || './tmp'
 );
+
+const CHROMIUM_PATH =
+  process.env.CHROMIUM_PATH ||
+  '/usr/bin/chromium';
 
 if (!fs.existsSync(TEMP_DIR)) {
   fs.mkdirSync(TEMP_DIR, {
@@ -120,64 +125,28 @@ const SUPPORTED_DOMAINS: Record<string, RegExp> = {
 function isAllowedInstagramMediaHost(
   hostname: string
 ): boolean {
-  const host =
-    hostname.toLowerCase();
-
-  /*
-   * IMPORTANT:
-   * static.cdninstagram.com contains
-   * Instagram frontend assets/icons.
-   *
-   * It must NEVER be treated as post media.
-   */
+  const host = hostname.toLowerCase();
 
   if (
-    host ===
-      'static.cdninstagram.com' ||
-    host.endsWith(
-      '.static.cdninstagram.com'
-    )
+    host === 'static.cdninstagram.com' ||
+    host.endsWith('.static.cdninstagram.com')
   ) {
     return false;
   }
 
-  /*
-   * Instagram media CDN.
-   */
-
   if (
-    host ===
-      'cdninstagram.com' ||
-    host.endsWith(
-      '.cdninstagram.com'
-    )
+    host === 'cdninstagram.com' ||
+    host.endsWith('.cdninstagram.com')
   ) {
-    /*
-     * Media normally uses scontent
-     * rather than static.cdninstagram.com.
-     */
-
     return (
-      host.startsWith(
-        'scontent'
-      ) ||
-      host.includes(
-        'scontent-'
-      )
+      host.startsWith('scontent') ||
+      host.includes('scontent-')
     );
   }
 
-  /*
-   * Facebook CDN can also host
-   * Instagram media.
-   */
-
   if (
-    host ===
-      'fbcdn.net' ||
-    host.endsWith(
-      '.fbcdn.net'
-    )
+    host === 'fbcdn.net' ||
+    host.endsWith('.fbcdn.net')
   ) {
     return true;
   }
@@ -197,8 +166,7 @@ async function validateUrlSafety(
   error?: string;
 }> {
   try {
-    const parsed =
-      new URL(inputUrl);
+    const parsed = new URL(inputUrl);
 
     if (
       parsed.protocol !== 'http:' &&
@@ -226,19 +194,13 @@ async function validateUrlSafety(
         SUPPORTED_DOMAINS
       )
     ) {
-      if (
-        regex.test(hostname)
-      ) {
-        matchedPlatform =
-          platform;
-
+      if (regex.test(hostname)) {
+        matchedPlatform = platform;
         break;
       }
     }
 
-    if (
-      !matchedPlatform
-    ) {
+    if (!matchedPlatform) {
       return {
         safe: false,
         error:
@@ -257,35 +219,20 @@ async function validateUrlSafety(
     for (
       const addr of addresses
     ) {
-      const ip =
-        addr.address;
+      const ip = addr.address;
 
       if (
-        ip.startsWith(
-          '127.'
-        ) ||
-        ip.startsWith(
-          '10.'
-        ) ||
-        ip.startsWith(
-          '192.168.'
-        ) ||
-        ip.startsWith(
-          '169.254.'
-        ) ||
+        ip.startsWith('127.') ||
+        ip.startsWith('10.') ||
+        ip.startsWith('192.168.') ||
+        ip.startsWith('169.254.') ||
         /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(
           ip
         ) ||
         ip === '::1' ||
-        ip.startsWith(
-          'fe80:'
-        ) ||
-        ip.startsWith(
-          'fc00:'
-        ) ||
-        ip.startsWith(
-          'fd00:'
-        )
+        ip.startsWith('fe80:') ||
+        ip.startsWith('fc00:') ||
+        ip.startsWith('fd00:')
       ) {
         return {
           safe: false,
@@ -297,14 +244,12 @@ async function validateUrlSafety(
 
     return {
       safe: true,
-      platform:
-        matchedPlatform,
+      platform: matchedPlatform,
     };
   } catch {
     return {
       safe: false,
-      error:
-        'Link tidak valid.',
+      error: 'Link tidak valid.',
     };
   }
 }
@@ -340,8 +285,7 @@ class CommandExecutionError extends Error {
     this.code = code;
     this.stdout = stdout;
     this.stderr = stderr;
-    this.timedOut =
-      timedOut;
+    this.timedOut = timedOut;
   }
 }
 
@@ -353,9 +297,7 @@ function runCommand(
   return new Promise(
     (resolve, reject) => {
       console.log(
-        `[EXEC] ${command} ${args.join(
-          ' '
-        )}`
+        `[EXEC] ${command} ${args.join(' ')}`
       );
 
       const child =
@@ -368,30 +310,20 @@ function runCommand(
           }
         );
 
-      let stdout =
-        '';
-
-      let stderr =
-        '';
-
-      let settled =
-        false;
+      let stdout = '';
+      let stderr = '';
+      let settled = false;
 
       const timer =
         setTimeout(
           () => {
-            if (
-              settled
-            ) {
+            if (settled) {
               return;
             }
 
-            settled =
-              true;
+            settled = true;
 
-            child.kill(
-              'SIGKILL'
-            );
+            child.kill('SIGKILL');
 
             reject(
               new CommandExecutionError(
@@ -413,8 +345,7 @@ function runCommand(
             | Buffer
             | string
         ) => {
-          stdout +=
-            chunk.toString();
+          stdout += chunk.toString();
         }
       );
 
@@ -425,8 +356,7 @@ function runCommand(
             | Buffer
             | string
         ) => {
-          stderr +=
-            chunk.toString();
+          stderr += chunk.toString();
         }
       );
 
@@ -435,18 +365,12 @@ function runCommand(
         (
           err: Error
         ) => {
-          if (
-            settled
-          ) {
+          if (settled) {
             return;
           }
 
-          clearTimeout(
-            timer
-          );
-
-          settled =
-            true;
+          clearTimeout(timer);
+          settled = true;
 
           reject(
             new CommandExecutionError(
@@ -465,31 +389,21 @@ function runCommand(
         (
           code
         ) => {
-          if (
-            settled
-          ) {
+          if (settled) {
             return;
           }
 
-          clearTimeout(
-            timer
-          );
-
-          settled =
-            true;
+          clearTimeout(timer);
+          settled = true;
 
           const exitCode =
             code ?? 1;
 
-          if (
-            exitCode ===
-            0
-          ) {
+          if (exitCode === 0) {
             resolve({
               stdout,
               stderr,
-              code:
-                exitCode,
+              code: exitCode,
             });
           } else {
             reject(
@@ -537,9 +451,7 @@ async function fetchInstagramHtml(
         targetUrl,
         {
           method: 'GET',
-
-          redirect:
-            'follow',
+          redirect: 'follow',
 
           headers: {
             'User-Agent':
@@ -581,9 +493,7 @@ async function fetchInstagramHtml(
       html,
     };
   } finally {
-    clearTimeout(
-      timeout
-    );
+    clearTimeout(timeout);
   }
 }
 
@@ -595,37 +505,18 @@ function decodeHtmlEntities(
   value: string
 ): string {
   return value
-    .replace(
-      /&amp;/gi,
-      '&'
-    )
-    .replace(
-      /&quot;/gi,
-      '"'
-    )
-    .replace(
-      /&#39;/gi,
-      "'"
-    )
-    .replace(
-      /&#x27;/gi,
-      "'"
-    )
-    .replace(
-      /&lt;/gi,
-      '<'
-    )
-    .replace(
-      /&gt;/gi,
-      '>'
-    );
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
 }
 
 function decodeInstagramUrl(
   value: string
 ): string {
-  let result =
-    value;
+  let result = value;
 
   result =
     result
@@ -700,9 +591,7 @@ function getMetaContent(
         /\bcontent\s*=\s*["']([^"']*)["']/i
       );
 
-    if (
-      !contentMatch
-    ) {
+    if (!contentMatch) {
       continue;
     }
 
@@ -749,9 +638,7 @@ function validateInstagramMediaUrl(
 
   try {
     const parsed =
-      new URL(
-        value
-      );
+      new URL(value);
 
     if (
       !isAllowedInstagramMediaHost(
@@ -764,57 +651,25 @@ function validateInstagramMediaUrl(
     const pathname =
       parsed.pathname.toLowerCase();
 
-    /*
-     * Reject obvious frontend assets.
-     */
-
     if (
-      pathname.endsWith(
-        '.css'
-      ) ||
-      pathname.endsWith(
-        '.js'
-      ) ||
-      pathname.endsWith(
-        '.ico'
-      ) ||
-      pathname.includes(
-        '/rsrc.php/'
-      )
+      pathname.endsWith('.css') ||
+      pathname.endsWith('.js') ||
+      pathname.endsWith('.ico') ||
+      pathname.includes('/rsrc.php/')
     ) {
       return null;
     }
 
-    /*
-     * Strong indication of Instagram media.
-     */
-
     const looksLikeMedia =
-      pathname.includes(
-        '/v/t51'
-      ) ||
-      pathname.includes(
-        '/t51.'
-      ) ||
-      pathname.includes(
-        '.jpg'
-      ) ||
-      pathname.includes(
-        '.jpeg'
-      ) ||
-      pathname.includes(
-        '.png'
-      ) ||
-      pathname.includes(
-        '.webp'
-      ) ||
-      parsed.searchParams.has(
-        'stp'
-      );
+      pathname.includes('/v/t51') ||
+      pathname.includes('/t51.') ||
+      pathname.includes('.jpg') ||
+      pathname.includes('.jpeg') ||
+      pathname.includes('.png') ||
+      pathname.includes('.webp') ||
+      parsed.searchParams.has('stp');
 
-    if (
-      !looksLikeMedia
-    ) {
+    if (!looksLikeMedia) {
       return null;
     }
 
@@ -835,12 +690,6 @@ function extractUrlsFromField(
   const results =
     new Set<string>();
 
-  /*
-   * Example:
-   *
-   * "display_url":"https:\/\/scontent...jpg"
-   */
-
   const pattern =
     new RegExp(
       `"${fieldName}"\\s*:\\s*"([^"]+)"`,
@@ -853,27 +702,19 @@ function extractUrlsFromField(
 
   while (
     (match =
-      pattern.exec(
-        html
-      )) !== null
+      pattern.exec(html)) !== null
   ) {
     const url =
       validateInstagramMediaUrl(
         match[1]
       );
 
-    if (
-      url
-    ) {
-      results.add(
-        url
-      );
+    if (url) {
+      results.add(url);
     }
   }
 
-  return Array.from(
-    results
-  );
+  return Array.from(results);
 }
 
 /* =========================================================
@@ -901,14 +742,11 @@ function collectInstagramImageCandidates(
     reason: string
   ) {
     const existing =
-      candidates.get(
-        url
-      );
+      candidates.get(url);
 
     if (
       !existing ||
-      score >
-        existing.score
+      score > existing.score
     ) {
       candidates.set(
         url,
@@ -920,11 +758,6 @@ function collectInstagramImageCandidates(
       );
     }
   }
-
-  /*
-   * Highest priority:
-   * display_url
-   */
 
   const displayUrls =
     extractUrlsFromField(
@@ -942,10 +775,6 @@ function collectInstagramImageCandidates(
     );
   }
 
-  /*
-   * thumbnail_src
-   */
-
   const thumbnailUrls =
     extractUrlsFromField(
       html,
@@ -962,10 +791,6 @@ function collectInstagramImageCandidates(
     );
   }
 
-  /*
-   * image_versions2
-   */
-
   const imageVersionUrls =
     extractUrlsFromField(
       html,
@@ -981,11 +806,6 @@ function collectInstagramImageCandidates(
       'image_versions2/url'
     );
   }
-
-  /*
-   * Scan explicit Instagram CDN
-   * URLs in HTML.
-   */
 
   const absoluteUrlRegex =
     /https?:\/\/[^"'<>\\\s]+/gi;
@@ -1009,43 +829,31 @@ function collectInstagramImageCandidates(
         raw
       );
 
-    if (
-      !url
-    ) {
+    if (!url) {
       continue;
     }
 
-    let score =
-      50;
+    let score = 50;
 
     const lower =
       url.toLowerCase();
 
     if (
-      lower.includes(
-        '/v/t51'
-      )
+      lower.includes('/v/t51')
     ) {
-      score +=
-        30;
+      score += 30;
     }
 
     if (
-      lower.includes(
-        'scontent'
-      )
+      lower.includes('scontent')
     ) {
-      score +=
-        20;
+      score += 20;
     }
 
     if (
-      lower.includes(
-        'stp='
-      )
+      lower.includes('stp=')
     ) {
-      score +=
-        10;
+      score += 10;
     }
 
     addCandidate(
@@ -1054,10 +862,6 @@ function collectInstagramImageCandidates(
       'Instagram CDN URL'
     );
   }
-
-  /*
-   * Scan escaped URLs.
-   */
 
   const escapedUrlRegex =
     /https?:\\\/\\\/[^"'<>\\\s]+/gi;
@@ -1086,34 +890,25 @@ function collectInstagramImageCandidates(
         raw
       );
 
-    if (
-      !url
-    ) {
+    if (!url) {
       continue;
     }
 
-    let score =
-      60;
+    let score = 60;
 
     const lower =
       url.toLowerCase();
 
     if (
-      lower.includes(
-        '/v/t51'
-      )
+      lower.includes('/v/t51')
     ) {
-      score +=
-        30;
+      score += 30;
     }
 
     if (
-      lower.includes(
-        'scontent'
-      )
+      lower.includes('scontent')
     ) {
-      score +=
-        20;
+      score += 20;
     }
 
     addCandidate(
@@ -1130,9 +925,625 @@ function collectInstagramImageCandidates(
       a,
       b
     ) =>
-      b.score -
-      a.score
+      b.score - a.score
   );
+}
+
+/* =========================================================
+   PLAYWRIGHT INSTAGRAM EXTRACTION
+   ========================================================= */
+
+interface BrowserInstagramImage {
+  url: string;
+  width: number;
+  height: number;
+  source: string;
+}
+
+interface BrowserInstagramResult {
+  success: boolean;
+
+  type:
+    | 'image'
+    | 'video'
+    | 'unknown';
+
+  title: string;
+
+  images: BrowserInstagramImage[];
+
+  videoUrl: string;
+
+  finalUrl: string;
+
+  pageTitle: string;
+
+  error?: string;
+}
+
+async function extractInstagramWithPlaywright(
+  targetUrl: string
+): Promise<BrowserInstagramResult> {
+  let browser:
+    Awaited<
+      ReturnType<typeof chromium.launch>
+    > | null = null;
+
+  try {
+    console.log(
+      `[Instagram Playwright] Launching Chromium: ${CHROMIUM_PATH}`
+    );
+
+    browser =
+      await chromium.launch({
+        headless: true,
+
+        executablePath:
+          CHROMIUM_PATH,
+
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-blink-features=AutomationControlled',
+        ],
+      });
+
+    const context =
+      await browser.newContext({
+        viewport: {
+          width: 1365,
+          height: 900,
+        },
+
+        userAgent:
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+
+        locale:
+          'en-US',
+
+        timezoneId:
+          'Asia/Jakarta',
+
+        colorScheme:
+          'light',
+
+        extraHTTPHeaders: {
+          'Accept-Language':
+            'en-US,en;q=0.9',
+        },
+      });
+
+    const page =
+      await context.newPage();
+
+    await page.goto(
+      targetUrl,
+      {
+        waitUntil:
+          'domcontentloaded',
+
+        timeout: 30000,
+      }
+    );
+
+    /*
+     * Give Instagram's client-side
+     * rendering a little time.
+     */
+
+    await page.waitForTimeout(
+      4000
+    );
+
+    /*
+     * Try waiting for images.
+     */
+
+    try {
+      await page.waitForLoadState(
+        'networkidle',
+        {
+          timeout: 8000,
+        }
+      );
+    } catch {
+      // networkidle may never happen
+    }
+
+    const finalUrl =
+      page.url();
+
+    const pageTitle =
+      await page.title().catch(
+        () => ''
+      );
+
+    /*
+     * Detect login redirect.
+     */
+
+    if (
+      finalUrl.includes(
+        '/accounts/login'
+      )
+    ) {
+      await browser.close();
+      browser = null;
+
+      return {
+        success: false,
+
+        type:
+          'unknown',
+
+        title: '',
+
+        images: [],
+
+        videoUrl: '',
+
+        finalUrl,
+
+        pageTitle,
+
+        error:
+          'Instagram mengarahkan halaman ke login.',
+      };
+    }
+
+    /*
+     * Extract images from the rendered DOM.
+     *
+     * We deliberately only accept URLs from
+     * Instagram/Facebook media CDNs.
+     */
+
+    const domImages =
+      await page.evaluate(
+        () => {
+          const output: Array<{
+            url: string;
+            width: number;
+            height: number;
+            source: string;
+          }> = [];
+
+          const images =
+            Array.from(
+              document.querySelectorAll(
+                'img'
+              )
+            );
+
+          for (
+            const img of images
+          ) {
+            const element =
+              img as HTMLImageElement;
+
+            const url =
+              element.currentSrc ||
+              element.src ||
+              '';
+
+            if (!url) {
+              continue;
+            }
+
+            output.push({
+              url,
+
+              width:
+                element.naturalWidth ||
+                element.width ||
+                0,
+
+              height:
+                element.naturalHeight ||
+                element.height ||
+                0,
+
+              source:
+                'dom-img',
+            });
+
+            /*
+             * Also inspect srcset because
+             * Instagram can keep the larger
+             * version there.
+             */
+
+            const srcset =
+              element.srcset ||
+              '';
+
+            if (srcset) {
+              const parts =
+                srcset
+                  .split(',')
+                  .map(
+                    (
+                      item
+                    ) =>
+                      item
+                        .trim()
+                        .split(
+                          /\s+/
+                        )[0]
+                  )
+                  .filter(
+                    Boolean
+                  );
+
+              for (
+                const src of parts
+              ) {
+                output.push({
+                  url: src,
+
+                  width:
+                    element.naturalWidth ||
+                    element.width ||
+                    0,
+
+                  height:
+                    element.naturalHeight ||
+                    element.height ||
+                    0,
+
+                  source:
+                    'dom-srcset',
+                });
+              }
+            }
+          }
+
+          return output;
+        }
+      );
+
+    /*
+     * Also inspect browser network resource
+     * URLs. This is useful when the image is
+     * rendered by React but not exposed in
+     * the original HTML.
+     */
+
+    const networkImages =
+      await page.evaluate(
+        () => {
+          const entries =
+            performance.getEntriesByType(
+              'resource'
+            );
+
+          return entries
+            .map(
+              (
+                entry
+              ) =>
+                (
+                  entry as PerformanceResourceTiming
+                ).name
+            )
+            .filter(
+              Boolean
+            );
+        }
+      );
+
+    /*
+     * Extract video sources too.
+     */
+
+    const browserVideos =
+      await page.evaluate(
+        () => {
+          const urls =
+            new Set<string>();
+
+          const videos =
+            Array.from(
+              document.querySelectorAll(
+                'video'
+              )
+            );
+
+          for (
+            const video of videos
+          ) {
+            const element =
+              video as HTMLVideoElement;
+
+            if (
+              element.currentSrc
+            ) {
+              urls.add(
+                element.currentSrc
+              );
+            }
+
+            if (
+              element.src
+            ) {
+              urls.add(
+                element.src
+              );
+            }
+
+            const sources =
+              Array.from(
+                element.querySelectorAll(
+                  'source'
+                )
+              );
+
+            for (
+              const source of sources
+            ) {
+              const src =
+                source.getAttribute(
+                  'src'
+                );
+
+              if (src) {
+                urls.add(src);
+              }
+            }
+          }
+
+          return Array.from(
+            urls
+          );
+        }
+      );
+
+    /*
+     * Combine DOM and network URLs.
+     */
+
+    const rawCandidates =
+      [
+        ...domImages,
+        ...networkImages.map(
+          (
+            url
+          ) => ({
+            url,
+            width: 0,
+            height: 0,
+            source:
+              'performance-resource',
+          })
+        ),
+      ];
+
+    const imageMap =
+      new Map<
+        string,
+        BrowserInstagramImage
+      >();
+
+    for (
+      const candidate of rawCandidates
+    ) {
+      const validated =
+        validateInstagramMediaUrl(
+          candidate.url
+        );
+
+      if (!validated) {
+        continue;
+      }
+
+      /*
+       * Ignore tiny images. Profile pictures
+       * and icons are generally much smaller.
+       */
+
+      if (
+        candidate.width > 0 &&
+        candidate.height > 0 &&
+        (
+          candidate.width < 250 ||
+          candidate.height < 250
+        )
+      ) {
+        continue;
+      }
+
+      const existing =
+        imageMap.get(
+          validated
+        );
+
+      if (
+        !existing ||
+        (
+          candidate.width *
+            candidate.height >
+          existing.width *
+            existing.height
+        )
+      ) {
+        imageMap.set(
+          validated,
+          {
+            url: validated,
+
+            width:
+              candidate.width,
+
+            height:
+              candidate.height,
+
+            source:
+              candidate.source,
+          }
+        );
+      }
+    }
+
+    /*
+     * Sort largest images first.
+     */
+
+    const images =
+      Array.from(
+        imageMap.values()
+      ).sort(
+        (
+          a,
+          b
+        ) =>
+          (
+            b.width *
+            b.height
+          ) -
+          (
+            a.width *
+            a.height
+          )
+      );
+
+    /*
+     * Validate browser video URLs.
+     *
+     * We don't use these directly for
+     * image downloading.
+     */
+
+    let videoUrl = '';
+
+    for (
+      const rawVideo of browserVideos
+    ) {
+      try {
+        const parsed =
+          new URL(
+            rawVideo
+          );
+
+        const host =
+          parsed.hostname.toLowerCase();
+
+        if (
+          host.includes(
+            'cdninstagram'
+          ) ||
+          host.endsWith(
+            'fbcdn.net'
+          )
+        ) {
+          videoUrl =
+            rawVideo;
+
+          break;
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    /*
+     * Determine media type.
+     */
+
+    const bodyText =
+      await page.locator(
+        'body'
+      ).innerText().catch(
+        () => ''
+      );
+
+    const looksLikeVideo =
+      Boolean(
+        videoUrl
+      ) ||
+      /watch the full video|video/i.test(
+        bodyText
+      );
+
+    const type =
+      images.length > 0
+        ? 'image'
+        : looksLikeVideo
+          ? 'video'
+          : 'unknown';
+
+    const title =
+      pageTitle ||
+      (
+        type === 'image'
+          ? 'Instagram Photo'
+          : type === 'video'
+            ? 'Instagram Video'
+            : ''
+      );
+
+    console.log(
+      `[Instagram Playwright] type=${type}, images=${images.length}, video=${Boolean(videoUrl)}`
+    );
+
+    await browser.close();
+    browser = null;
+
+    return {
+      success:
+        type !== 'unknown',
+
+      type,
+
+      title,
+
+      images,
+
+      videoUrl,
+
+      finalUrl,
+
+      pageTitle,
+    };
+  } catch (
+    err: unknown
+  ) {
+    console.error(
+      '[Instagram Playwright Error]',
+      err
+    );
+
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // ignore
+      }
+    }
+
+    return {
+      success: false,
+
+      type:
+        'unknown',
+
+      title: '',
+
+      images: [],
+
+      videoUrl: '',
+
+      finalUrl: targetUrl,
+
+      pageTitle: '',
+
+      error:
+        err instanceof Error
+          ? err.message
+          : String(err),
+    };
+  }
 }
 
 /* =========================================================
@@ -1169,15 +1580,11 @@ async function extractInstagramFromHtml(
     result.html;
 
   if (
-    result.status <
-      200 ||
-    result.status >=
-      300
+    result.status < 200 ||
+    result.status >= 300
   ) {
     return {
-      type:
-        'unknown',
-
+      type: 'unknown',
       title: '',
     };
   }
@@ -1188,9 +1595,7 @@ async function extractInstagramFromHtml(
     )
   ) {
     return {
-      type:
-        'unknown',
-
+      type: 'unknown',
       title: '',
     };
   }
@@ -1213,14 +1618,8 @@ async function extractInstagramFromHtml(
       'og:video'
     );
 
-  /*
-   * Detect video.
-   */
-
   const hasVideo =
-    Boolean(
-      ogVideo
-    ) ||
+    Boolean(ogVideo) ||
     /"is_video"\s*:\s*true/i.test(
       html
     ) ||
@@ -1231,26 +1630,13 @@ async function extractInstagramFromHtml(
       html
     );
 
-  /*
-   * Collect real media candidates.
-   */
-
   const candidates =
     collectInstagramImageCandidates(
       html
     );
 
-  /*
-   * For a video post, og:image or
-   * a strong media candidate can serve
-   * as thumbnail.
-   */
-
-  if (
-    hasVideo
-  ) {
-    let thumbnail =
-      '';
+  if (hasVideo) {
+    let thumbnail = '';
 
     const validatedOgImage =
       ogImage
@@ -1259,22 +1645,18 @@ async function extractInstagramFromHtml(
           )
         : null;
 
-    if (
-      validatedOgImage
-    ) {
+    if (validatedOgImage) {
       thumbnail =
         validatedOgImage;
     } else if (
-      candidates.length >
-      0
+      candidates.length > 0
     ) {
       thumbnail =
         candidates[0].url;
     }
 
     return {
-      type:
-        'video',
+      type: 'video',
 
       title:
         ogTitle ||
@@ -1284,20 +1666,14 @@ async function extractInstagramFromHtml(
     };
   }
 
-  /*
-   * Image post.
-   */
-
   if (
-    candidates.length >
-    0
+    candidates.length > 0
   ) {
     const best =
       candidates[0];
 
     return {
-      type:
-        'image',
+      type: 'image',
 
       title:
         ogTitle ||
@@ -1309,8 +1685,7 @@ async function extractInstagramFromHtml(
       thumbnail:
         best.url,
 
-      ext:
-        'jpg',
+      ext: 'jpg',
 
       debug: {
         candidateCount:
@@ -1326,15 +1701,12 @@ async function extractInstagramFromHtml(
   }
 
   return {
-    type:
-      'unknown',
+    type: 'unknown',
 
     title: '',
 
     debug: {
-      candidateCount:
-        0,
-
+      candidateCount: 0,
       candidates: [],
     },
   };
@@ -1371,13 +1743,9 @@ async function extractInstagramWithGalleryDl(
   const raw =
     result.stdout.trim();
 
-  if (
-    !raw
-  ) {
+  if (!raw) {
     return {
-      type:
-        'unknown',
-
+      type: 'unknown',
       title: '',
     };
   }
@@ -1398,7 +1766,9 @@ async function extractInstagramWithGalleryDl(
       raw
         .split('\n')
         .filter(
-          (line) =>
+          (
+            line
+          ) =>
             line.trim()
         );
 
@@ -1461,17 +1831,14 @@ async function extractInstagramWithGalleryDl(
         Array.isArray(
           entry
         ) &&
-        entry.length >=
-          2 &&
-        entry[0] ===
-          3 &&
+        entry.length >= 2 &&
+        entry[0] === 3 &&
         typeof entry[1] ===
           'string'
     );
 
   if (
-    mediaEntries.length ===
-    1
+    mediaEntries.length === 1
   ) {
     const media =
       mediaEntries[0];
@@ -1481,12 +1848,9 @@ async function extractInstagramWithGalleryDl(
         media[1]
       );
 
-    if (
-      mediaUrl
-    ) {
+    if (mediaUrl) {
       return {
-        type:
-          'image',
+        type: 'image',
 
         title:
           'Instagram Photo',
@@ -1494,16 +1858,13 @@ async function extractInstagramWithGalleryDl(
         imageUrl:
           mediaUrl,
 
-        ext:
-          'jpg',
+        ext: 'jpg',
       };
     }
   }
 
   return {
-    type:
-      'unknown',
-
+    type: 'unknown',
     title: '',
   };
 }
@@ -1512,9 +1873,7 @@ async function extractInstagramWithGalleryDl(
    INSTAGRAM ANALYZER
    ========================================================= */
 
-async function analyzeInstagram(
-  targetUrl: string
-): Promise<{
+interface InstagramAnalyzeResult {
   type:
     | 'image'
     | 'video'
@@ -1527,10 +1886,26 @@ async function analyzeInstagram(
   imageUrl?: string;
 
   ext?: string;
-}> {
+
+  items?: Array<{
+    index: number;
+    type: 'image';
+    url: string;
+    ext: string;
+  }>;
+
+  debug?: Record<
+    string,
+    unknown
+  >;
+}
+
+async function analyzeInstagram(
+  targetUrl: string
+): Promise<InstagramAnalyzeResult> {
   /*
    * STEP 1
-   * Public HTML.
+   * Try normal HTML first.
    */
 
   try {
@@ -1571,6 +1946,110 @@ async function analyzeInstagram(
 
   /*
    * STEP 2
+   * Playwright.
+   *
+   * This is the important new part.
+   */
+
+  try {
+    const browserResult =
+      await extractInstagramWithPlaywright(
+        targetUrl
+      );
+
+    if (
+      browserResult.type ===
+      'image' &&
+      browserResult.images.length >
+        0
+    ) {
+      const items =
+        browserResult.images.map(
+          (
+            image,
+            index
+          ) => ({
+            index,
+
+            type:
+              'image' as const,
+
+            url:
+              image.url,
+
+            ext:
+              'jpg',
+          })
+        );
+
+      return {
+        type: 'image',
+
+        title:
+          browserResult.title ||
+          'Instagram Photo',
+
+        thumbnail:
+          items[0]?.url ||
+          '',
+
+        imageUrl:
+          items[0]?.url ||
+          '',
+
+        ext: 'jpg',
+
+        items,
+
+        debug: {
+          source:
+            'playwright',
+
+          finalUrl:
+            browserResult.finalUrl,
+
+          imageCount:
+            browserResult.images.length,
+
+          images:
+            browserResult.images
+              .slice(
+                0,
+                20
+              ),
+        },
+      };
+    }
+
+    /*
+     * If Playwright found a video,
+     * let yt-dlp handle the actual
+     * video download.
+     */
+
+    if (
+      browserResult.type ===
+      'video'
+    ) {
+      return {
+        type: 'video',
+
+        title:
+          browserResult.title ||
+          'Instagram Video',
+      };
+    }
+  } catch (
+    err: unknown
+  ) {
+    console.error(
+      '[Instagram Playwright]',
+      err
+    );
+  }
+
+  /*
+   * STEP 3
    * gallery-dl fallback.
    */
 
@@ -1585,8 +2064,7 @@ async function analyzeInstagram(
       'image'
     ) {
       return {
-        type:
-          'image',
+        type: 'image',
 
         title:
           galleryResult.title,
@@ -1600,6 +2078,25 @@ async function analyzeInstagram(
         ext:
           galleryResult.ext ||
           'jpg',
+
+        items:
+          galleryResult.imageUrl
+            ? [
+                {
+                  index: 0,
+
+                  type:
+                    'image',
+
+                  url:
+                    galleryResult.imageUrl,
+
+                  ext:
+                    galleryResult.ext ||
+                    'jpg',
+                },
+              ]
+            : [],
       };
     }
   } catch (
@@ -1612,8 +2109,7 @@ async function analyzeInstagram(
   }
 
   return {
-    type:
-      'unknown',
+    type: 'unknown',
   };
 }
 
@@ -1636,8 +2132,7 @@ app.get(
         'string'
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Query parameter url diperlukan.',
@@ -1657,8 +2152,7 @@ app.get(
         'instagram'
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'URL Instagram publik diperlukan.',
@@ -1676,8 +2170,7 @@ app.get(
           canonicalUrl
         );
 
-      parsed.search =
-        '';
+      parsed.search = '';
 
       canonicalUrl =
         parsed.toString();
@@ -1764,21 +2257,18 @@ app.get(
         '';
 
       if (
-        ogImageIndex >=
-        0
+        ogImageIndex >= 0
       ) {
         const start =
           Math.max(
             0,
-            ogImageIndex -
-              500
+            ogImageIndex - 500
           );
 
         const end =
           Math.min(
             html.length,
-            ogImageIndex +
-              1500
+            ogImageIndex + 1500
           );
 
         ogImageSnippet =
@@ -1947,6 +2437,96 @@ app.get(
     }
 
     /* ---------------------------------------------
+       PLAYWRIGHT TEST
+       --------------------------------------------- */
+
+    let playwrightTest:
+      Record<
+        string,
+        unknown
+      >;
+
+    try {
+      const browserResult =
+        await extractInstagramWithPlaywright(
+          canonicalUrl
+        );
+
+      playwrightTest = {
+        success:
+          browserResult.success,
+
+        type:
+          browserResult.type,
+
+        title:
+          browserResult.title,
+
+        finalUrl:
+          browserResult.finalUrl,
+
+        pageTitle:
+          browserResult.pageTitle,
+
+        imageCount:
+          browserResult.images.length,
+
+        images:
+          browserResult.images
+            .slice(
+              0,
+              20
+            )
+            .map(
+              (
+                image
+              ) => ({
+                url:
+                  image.url.substring(
+                    0,
+                    1200
+                  ),
+
+                width:
+                  image.width,
+
+                height:
+                  image.height,
+
+                source:
+                  image.source,
+              })
+            ),
+
+        hasVideo:
+          Boolean(
+            browserResult.videoUrl
+          ),
+
+        videoUrl:
+          browserResult.videoUrl
+            ? browserResult.videoUrl.substring(
+                0,
+                1200
+              )
+            : '',
+
+        error:
+          browserResult.error ||
+          '',
+      };
+    } catch (
+      err: unknown
+    ) {
+      playwrightTest = {
+        error:
+          err instanceof Error
+            ? err.message
+            : String(err),
+      };
+    }
+
+    /* ---------------------------------------------
        GALLERY-DL TEST
        --------------------------------------------- */
 
@@ -2058,6 +2638,14 @@ app.get(
         ext:
           result.ext ||
           '',
+
+        items:
+          result.items ||
+          [],
+
+        debug:
+          result.debug ||
+          {},
       };
     } catch (
       err: unknown
@@ -2071,14 +2659,16 @@ app.get(
     }
 
     res.json({
-      success:
-        true,
+      success: true,
 
       url:
         canonicalUrl,
 
       html:
         htmlTest,
+
+      playwright:
+        playwrightTest,
 
       galleryDl:
         galleryTest,
@@ -2100,8 +2690,7 @@ app.get(
     res: Response
   ): void => {
     res.json({
-      status:
-        'ok',
+      status: 'ok',
 
       service:
         'linkdrop-backend',
@@ -2111,6 +2700,9 @@ app.get(
 
       activeDownloads:
         activeDownloadsCount,
+
+      chromium:
+        CHROMIUM_PATH,
     });
   }
 );
@@ -2135,8 +2727,7 @@ app.post(
         'string'
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'URL publik yang didukung diperlukan.',
@@ -2154,8 +2745,7 @@ app.post(
       !safety.safe
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           safety.error ||
@@ -2172,14 +2762,16 @@ app.post(
     if (
       safety.platform ===
         'instagram' &&
-      url.includes(
-        '/p/'
-      )
+      url.includes('/p/')
     ) {
       const instagram =
         await analyzeInstagram(
           url
         );
+
+      /*
+       * Instagram Photo / Carousel.
+       */
 
       if (
         instagram.type ===
@@ -2187,14 +2779,12 @@ app.post(
         instagram.imageUrl
       ) {
         res.json({
-          success:
-            true,
+          success: true,
 
           platform:
             'instagram',
 
-          type:
-            'image',
+          type: 'image',
 
           title:
             instagram.title ||
@@ -2207,22 +2797,23 @@ app.post(
           uploader:
             'Instagram User',
 
-          items: [
-            {
-              index:
-                0,
+          items:
+            instagram.items ||
+            [
+              {
+                index: 0,
 
-              type:
-                'image',
+                type:
+                  'image',
 
-              url:
-                instagram.imageUrl,
+                url:
+                  instagram.imageUrl,
 
-              ext:
-                instagram.ext ||
-                'jpg',
-            },
-          ],
+                ext:
+                  instagram.ext ||
+                  'jpg',
+              },
+            ],
 
           url,
         });
@@ -2232,20 +2823,8 @@ app.post(
 
       /*
        * Instagram video:
-       * Let yt-dlp handle it if
-       * the HTML extractor identified
-       * it as video but has no direct
-       * video URL.
+       * Continue into yt-dlp.
        */
-
-      if (
-        instagram.type ===
-        'video'
-      ) {
-        /*
-         * Continue into yt-dlp.
-         */
-      }
     }
 
     /* ---------------------------------------------
@@ -2278,14 +2857,12 @@ app.post(
         );
 
       res.json({
-        success:
-          true,
+        success: true,
 
         platform:
           safety.platform,
 
-        type:
-          'video',
+        type: 'video',
 
         title:
           meta.title ||
@@ -2308,8 +2885,7 @@ app.post(
 
         formats: [
           {
-            id:
-              'best',
+            id: 'best',
 
             label:
               'Video MP4 (HD)',
@@ -2325,8 +2901,7 @@ app.post(
           },
 
           {
-            id:
-              'audio',
+            id: 'audio',
 
             label:
               'Audio MP3',
@@ -2351,8 +2926,7 @@ app.post(
       );
 
       res.status(500).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Media tidak tersedia atau tidak dapat diproses saat ini.',
@@ -2382,8 +2956,7 @@ app.post(
         'string'
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'URL publik yang didukung diperlukan.',
@@ -2401,8 +2974,7 @@ app.post(
       !safety.safe
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           safety.error,
@@ -2416,8 +2988,7 @@ app.post(
       MAX_CONCURRENT_DOWNLOADS
     ) {
       res.status(503).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Server sibuk. Coba beberapa saat lagi.',
@@ -2429,8 +3000,7 @@ app.post(
     activeDownloadsCount++;
 
     const isAudio =
-      formatId ===
-      'audio';
+      formatId === 'audio';
 
     const ext =
       isAudio
@@ -2439,12 +3009,8 @@ app.post(
 
     const jobId =
       crypto
-        .randomBytes(
-          8
-        )
-        .toString(
-          'hex'
-        );
+        .randomBytes(8)
+        .toString('hex');
 
     const outputTemplate =
       path.join(
@@ -2452,8 +3018,7 @@ app.post(
         `${jobId}.%(ext)s`
       );
 
-    let finalFilePath =
-      '';
+    let finalFilePath = '';
 
     try {
       const args = [
@@ -2478,9 +3043,7 @@ app.post(
         outputTemplate,
       ];
 
-      if (
-        isAudio
-      ) {
+      if (isAudio) {
         args.push(
           '--extract-audio',
 
@@ -2504,9 +3067,7 @@ app.post(
         );
       }
 
-      args.push(
-        url
-      );
+      args.push(url);
 
       await runCommand(
         'yt-dlp',
@@ -2529,9 +3090,7 @@ app.post(
             )
         );
 
-      if (
-        !matched
-      ) {
+      if (!matched) {
         throw new Error(
           'File hasil download tidak ditemukan.'
         );
@@ -2555,9 +3114,7 @@ app.post(
         }_${
           Date.now()
             .toString()
-            .slice(
-              -4
-            )
+            .slice(-4)
         }.${ext}`;
 
       res.setHeader(
@@ -2603,9 +3160,7 @@ app.post(
           }
         };
 
-      stream.pipe(
-        res
-      );
+      stream.pipe(res);
 
       res.on(
         'finish',
@@ -2643,8 +3198,7 @@ app.post(
         !res.headersSent
       ) {
         res.status(500).json({
-          success:
-            false,
+          success: false,
 
           message:
             'Gagal memproses download media.',
@@ -2654,8 +3208,7 @@ app.post(
       activeDownloadsCount =
         Math.max(
           0,
-          activeDownloadsCount -
-            1
+          activeDownloadsCount - 1
         );
     }
   }
@@ -2676,15 +3229,38 @@ app.post(
       imageUrl,
     } = req.body;
 
-    let targetImageUrl =
-      '';
+    let targetImageUrl = '';
 
     /*
-     * Prefer extracting from original
-     * Instagram URL.
+     * Prefer supplied imageUrl first.
+     *
+     * This is important for carousel:
+     * each item can have its own CDN URL.
      */
 
     if (
+      imageUrl &&
+      typeof imageUrl ===
+        'string'
+    ) {
+      const validated =
+        validateInstagramMediaUrl(
+          imageUrl
+        );
+
+      if (validated) {
+        targetImageUrl =
+          validated;
+      }
+    }
+
+    /*
+     * If no imageUrl was supplied,
+     * extract from original Instagram URL.
+     */
+
+    if (
+      !targetImageUrl &&
       url &&
       typeof url ===
         'string'
@@ -2715,35 +3291,11 @@ app.post(
       }
     }
 
-    /*
-     * Fallback to supplied imageUrl.
-     */
-
-    if (
-      !targetImageUrl &&
-      imageUrl &&
-      typeof imageUrl ===
-        'string'
-    ) {
-      const validated =
-        validateInstagramMediaUrl(
-          imageUrl
-        );
-
-      if (
-        validated
-      ) {
-        targetImageUrl =
-          validated;
-      }
-    }
-
     if (
       !targetImageUrl
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Foto Instagram ini tidak dapat diproses saat ini.',
@@ -2764,8 +3316,7 @@ app.post(
         )
       ) {
         res.status(400).json({
-          success:
-            false,
+          success: false,
 
           message:
             'Host gambar tidak diizinkan.',
@@ -2845,8 +3396,7 @@ app.post(
           1024
       ) {
         res.status(400).json({
-          success:
-            false,
+          success: false,
 
           message:
             'File terlalu besar untuk diproses.',
@@ -2855,39 +3405,33 @@ app.post(
         return;
       }
 
-      let imageExt =
-        'jpg';
+      let imageExt = 'jpg';
 
       if (
         contentType.includes(
           'png'
         )
       ) {
-        imageExt =
-          'png';
+        imageExt = 'png';
       } else if (
         contentType.includes(
           'webp'
         )
       ) {
-        imageExt =
-          'webp';
+        imageExt = 'webp';
       } else if (
         contentType.includes(
           'jpeg'
         )
       ) {
-        imageExt =
-          'jpg';
+        imageExt = 'jpg';
       }
 
       const filename =
         `LinkDrop_Instagram_Photo_${
           Date.now()
             .toString()
-            .slice(
-              -4
-            )
+            .slice(-4)
         }.${imageExt}`;
 
       res.setHeader(
@@ -2906,9 +3450,7 @@ app.post(
         buffer.length
       );
 
-      res.send(
-        buffer
-      );
+      res.send(buffer);
     } catch (
       err: unknown
     ) {
@@ -2921,8 +3463,7 @@ app.post(
         !res.headersSent
       ) {
         res.status(500).json({
-          success:
-            false,
+          success: false,
 
           message:
             'Foto Instagram ini tidak dapat diproses saat ini.',
@@ -2964,9 +3505,7 @@ setInterval(
         if (
           now -
             stat.mtimeMs >
-          15 *
-            60 *
-            1000
+          15 * 60 * 1000
         ) {
           fs.unlinkSync(
             fullPath
@@ -2977,9 +3516,7 @@ setInterval(
       // ignore cleanup errors
     }
   },
-  10 *
-    60 *
-    1000
+  10 * 60 * 1000
 );
 
 /* =========================================================
@@ -2996,6 +3533,10 @@ app.listen(
 
     console.log(
       `[LinkDrop Server] Temp directory: ${TEMP_DIR}`
+    );
+
+    console.log(
+      `[LinkDrop Server] Chromium: ${CHROMIUM_PATH}`
     );
   }
 );

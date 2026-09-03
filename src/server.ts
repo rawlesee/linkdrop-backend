@@ -1136,10 +1136,10 @@ app.post(
           );
 
                 if (
-          apify.success &&
-          "items" in apify &&
-          apify.items.length > 0
-        ) {
+  apify.success &&
+  Array.isArray(apify.items) &&
+  apify.items.length > 0
+) {
           return res.json({
             success: true,
             type: "image",

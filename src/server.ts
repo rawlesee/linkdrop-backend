@@ -69,6 +69,7 @@ const DownloadSchema = z.object({
 function isInstagramUrl(rawUrl: string): boolean {
   try {
     const u = new URL(rawUrl);
+
     return (
       u.hostname === "instagram.com" ||
       u.hostname === "www.instagram.com"
@@ -82,7 +83,6 @@ function cleanInstagramUrl(rawUrl: string): string {
   try {
     const u = new URL(rawUrl);
 
-    // Hilangkan query tracking seperti ?igsh=...
     return `https://www.instagram.com${u.pathname}`;
   } catch {
     return rawUrl;
@@ -120,14 +120,15 @@ function normalizeMediaUrl(rawUrl: string): string | null {
   }
 }
 
-function uniqueMedia(items: ExtractedMediaItem[]): ExtractedMediaItem[] {
+function uniqueMedia(
+  items: ExtractedMediaItem[]
+): ExtractedMediaItem[] {
   const seen = new Set<string>();
   const result: ExtractedMediaItem[] = [];
 
   for (const item of items) {
     if (!item.url) continue;
 
-    // Hilangkan query tracking yang tidak penting untuk dedupe
     let key = item.url;
 
     try {
@@ -160,7 +161,9 @@ async function launchBrowser(): Promise<Browser> {
   });
 }
 
-async function waitForInstagram(page: Page): Promise<void> {
+async function waitForInstagram(
+  page: Page
+): Promise<void> {
   await page.waitForTimeout(2500);
 
   try {
@@ -172,7 +175,9 @@ async function waitForInstagram(page: Page): Promise<void> {
   await page.waitForTimeout(2500);
 }
 
-async function getPageText(page: Page): Promise<string> {
+async function getPageText(
+  page: Page
+): Promise<string> {
   try {
     return await page.locator("body").innerText({
       timeout: 5000,
@@ -182,7 +187,9 @@ async function getPageText(page: Page): Promise<string> {
   }
 }
 
-function looksLikeInstagramLoginPage(text: string): boolean {
+function looksLikeInstagramLoginPage(
+  text: string
+): boolean {
   const lower = text.toLowerCase();
 
   return (
@@ -191,7 +198,9 @@ function looksLikeInstagramLoginPage(text: string): boolean {
   );
 }
 
-function looksLikeInstagramChallenge(text: string): boolean {
+function looksLikeInstagramChallenge(
+  text: string
+): boolean {
   const lower = text.toLowerCase();
 
   return (
@@ -336,7 +345,8 @@ async function extractVisibleMedia(
       type: item.type,
       url,
       thumbnail: item.thumbnail
-        ? normalizeMediaUrl(item.thumbnail) || undefined
+        ? normalizeMediaUrl(item.thumbnail) ||
+          undefined
         : undefined,
     });
   }
@@ -347,13 +357,13 @@ async function extractVisibleMedia(
 async function getBestCurrentMedia(
   page: Page
 ): Promise<ExtractedMediaItem | null> {
-  const candidates = await extractVisibleMedia(page);
+  const candidates =
+    await extractVisibleMedia(page);
 
   if (!candidates.length) {
     return null;
   }
 
-  // Pilih media terbesar/terlihat paling dominan.
   return candidates[0];
 }
 
@@ -376,10 +386,18 @@ async function findNextButton(page: Page) {
       const count = await locator.count();
 
       if (count > 0) {
-        for (let i = 0; i < Math.min(count, 5); i++) {
+        for (
+          let i = 0;
+          i < Math.min(count, 5);
+          i++
+        ) {
           const el = locator.nth(i);
 
-          if (await el.isVisible().catch(() => false)) {
+          if (
+            await el
+              .isVisible()
+              .catch(() => false)
+          ) {
             return el;
           }
         }
@@ -455,26 +473,15 @@ async function extractInstagramWithPlaywright(
       };
     }
 
-    /*
-     * Instagram sering mengubah struktur DOM.
-     * Jadi kita TIDAK mengharuskan adanya <article>.
-     *
-     * Kita mencari media yang benar-benar sedang tampil,
-     * lalu menggunakan tombol Next untuk berpindah slide.
-     */
-
     const items: ExtractedMediaItem[] = [];
 
-    const firstMedia = await getBestCurrentMedia(page);
+    const firstMedia =
+      await getBestCurrentMedia(page);
 
     if (firstMedia) {
       items.push(firstMedia);
     }
 
-    /*
-     * Kalau tidak menemukan media dari DOM,
-     * coba resource network yang sudah dimuat.
-     */
     if (!items.length) {
       const networkItems =
         await extractFromPerformanceEntries(page);
@@ -484,15 +491,12 @@ async function extractInstagramWithPlaywright(
       }
     }
 
-    /*
-     * Carousel:
-     * maksimal 30 slide.
-     */
     const visited = new Set<string>();
 
     for (
       let slide = 0;
-      slide < MAX_INSTAGRAM_CAROUSEL_ITEMS - 1;
+      slide <
+      MAX_INSTAGRAM_CAROUSEL_ITEMS - 1;
       slide++
     ) {
       const current =
@@ -504,7 +508,9 @@ async function extractInstagramWithPlaywright(
 
       try {
         const u = new URL(current.url);
-        currentKey = `${u.hostname}${u.pathname}`;
+
+        currentKey =
+          `${u.hostname}${u.pathname}`;
       } catch {}
 
       visited.add(currentKey);
@@ -515,8 +521,6 @@ async function extractInstagramWithPlaywright(
       if (!nextButton) {
         break;
       }
-
-      const beforeUrl = page.url();
 
       await nextButton
         .click({
@@ -529,15 +533,14 @@ async function extractInstagramWithPlaywright(
       let nextMedia =
         await getBestCurrentMedia(page);
 
-      /*
-       * Tunggu sedikit lagi jika media belum berganti.
-       */
       if (
         nextMedia &&
         visited.has(
           (() => {
             try {
-              const u = new URL(nextMedia.url);
+              const u =
+                new URL(nextMedia.url);
+
               return `${u.hostname}${u.pathname}`;
             } catch {
               return nextMedia.url;
@@ -546,6 +549,7 @@ async function extractInstagramWithPlaywright(
         )
       ) {
         await page.waitForTimeout(1200);
+
         nextMedia =
           await getBestCurrentMedia(page);
       }
@@ -558,14 +562,12 @@ async function extractInstagramWithPlaywright(
 
       try {
         const u = new URL(nextMedia.url);
-        nextKey = `${u.hostname}${u.pathname}`;
+
+        nextKey =
+          `${u.hostname}${u.pathname}`;
       } catch {}
 
       if (visited.has(nextKey)) {
-        /*
-         * URL sama berarti carousel sudah kembali
-         * ke slide yang pernah dikunjungi.
-         */
         break;
       }
 
@@ -578,49 +580,49 @@ async function extractInstagramWithPlaywright(
 
       items.push(nextMedia);
       visited.add(nextKey);
-
-      /*
-       * Kalau tombol next masih ada tetapi URL halaman
-       * berubah, tetap lanjut. Instagram carousel
-       * tidak selalu mengubah URL, jadi perubahan URL
-       * bukan syarat.
-       */
-      void beforeUrl;
     }
 
-    const finalItems = uniqueMedia(items).slice(
-      0,
-      MAX_INSTAGRAM_CAROUSEL_ITEMS
-    );
+    const finalItems =
+      uniqueMedia(items).slice(
+        0,
+        MAX_INSTAGRAM_CAROUSEL_ITEMS
+      );
 
-    /*
-     * Fallback tambahan untuk post yang tidak punya
-     * tombol carousel atau DOM-nya aneh.
-     */
     if (!finalItems.length) {
       const networkItems =
         await extractFromPerformanceEntries(page);
 
       const usableNetworkItems =
         networkItems
-          .filter((item) => isAllowedInstagramMediaUrl(item.url))
-          .slice(0, MAX_INSTAGRAM_CAROUSEL_ITEMS);
+          .filter((item) =>
+            isAllowedInstagramMediaUrl(
+              item.url
+            )
+          )
+          .slice(
+            0,
+            MAX_INSTAGRAM_CAROUSEL_ITEMS
+          );
 
       if (usableNetworkItems.length) {
         const hasVideo =
           usableNetworkItems.some(
-            (item) => item.type === "video"
+            (item) =>
+              item.type === "video"
           );
 
         return {
           success: true,
           url,
           isVideoPost:
-            hasVideo && usableNetworkItems.length === 1,
+            hasVideo &&
+            usableNetworkItems.length === 1,
           title: "",
           thumbnail:
-            usableNetworkItems[0]?.url || "",
-          itemCount: usableNetworkItems.length,
+            usableNetworkItems[0]?.url ||
+            "",
+          itemCount:
+            usableNetworkItems.length,
           items: usableNetworkItems,
         };
       }
@@ -640,15 +642,6 @@ async function extractInstagramWithPlaywright(
       };
     }
 
-    const hasVideo = finalItems.some(
-      (item) => item.type === "video"
-    );
-
-    /*
-     * Satu video saja:
-     * biarkan endpoint /api/analyze menggunakan yt-dlp
-     * untuk download video Instagram.
-     */
     if (
       finalItems.length === 1 &&
       finalItems[0].type === "video"
@@ -698,14 +691,159 @@ async function extractInstagramWithPlaywright(
   }
 }
 
+/* =========================
+   APIFY INSTAGRAM
+========================= */
+
+async function extractInstagramWithApify(
+  rawUrl: string
+) {
+  const token =
+    process.env.APIFY_API_TOKEN;
+
+  if (!token) {
+    return {
+      success: false,
+      error:
+        "APIFY_API_TOKEN belum dikonfigurasi.",
+    };
+  }
+
+  try {
+    const response = await fetch(
+      "https://api.apify.com/v2/actors/crawlerbros~instagram-post-scraper/run-sync-get-dataset-items",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          post_urls: [rawUrl],
+        }),
+        signal: AbortSignal.timeout(
+          120000
+        ),
+      }
+    );
+
+    if (!response.ok) {
+      const text =
+        await response.text();
+
+      return {
+        success: false,
+        error:
+          `Apify error ${response.status}: ${text}`,
+      };
+    }
+
+    const data =
+      await response.json();
+
+    if (
+      !Array.isArray(data) ||
+      data.length === 0
+    ) {
+      return {
+        success: false,
+        error:
+          "Instagram post tidak ditemukan.",
+      };
+    }
+
+    const post = data[0];
+
+    if (post.status !== "success") {
+      return {
+        success: false,
+        error:
+          `Instagram: ${
+            post.status ||
+            "gagal mengambil post"
+          }.`,
+      };
+    }
+
+    const mediaItems =
+      Array.isArray(post.media_items)
+        ? post.media_items.slice(
+            0,
+            MAX_INSTAGRAM_CAROUSEL_ITEMS
+          )
+        : [];
+
+    const normalizedItems: ExtractedMediaItem[] =
+      mediaItems
+        .map((item: any) => {
+          const mediaUrl =
+            typeof item.url === "string"
+              ? item.url
+              : "";
+
+          if (!mediaUrl) {
+            return null;
+          }
+
+          return {
+            type:
+              String(item.type)
+                .toLowerCase() ===
+              "video"
+                ? "video"
+                : "image",
+            url: mediaUrl,
+            thumbnail:
+              typeof item.thumbnail_url ===
+              "string"
+                ? item.thumbnail_url
+                : mediaUrl,
+          } as ExtractedMediaItem;
+        })
+        .filter(
+          (
+            item:
+              | ExtractedMediaItem
+              | null
+          ): item is ExtractedMediaItem =>
+            item !== null
+        );
+
+    return {
+      success: true,
+      url:
+        post.post_url ||
+        rawUrl,
+      title:
+        post.caption ||
+        "Instagram Post",
+      thumbnail:
+        post.thumbnail_url ||
+        normalizedItems[0]?.thumbnail ||
+        "",
+      itemCount:
+        normalizedItems.length,
+      items: normalizedItems,
+    };
+  } catch (error: any) {
+    return {
+      success: false,
+      error:
+        error?.message ||
+        "Gagal mengambil Instagram dari Apify.",
+    };
+  }
+}
+
 async function runYtDlp(
   url: string,
   outputDir: string
 ) {
-  const outputTemplate = path.join(
-    outputDir,
-    "%(title).100B-%(id)s.%(ext)s"
-  );
+  const outputTemplate =
+    path.join(
+      outputDir,
+      "%(title).100B-%(id)s.%(ext)s"
+    );
 
   const args = [
     "--no-playlist",
@@ -726,13 +864,19 @@ async function runYtDlp(
   );
 }
 
-function safeFilename(name: string): string {
+function safeFilename(
+  name: string
+): string {
   return (
     name
-      .replace(/[<>:"/\\|?*\x00-\x1F]/g, "_")
+      .replace(
+        /[<>:"/\\|?*\x00-\x1F]/g,
+        "_"
+      )
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 180) || "download"
+      .slice(0, 180) ||
+    "download"
   );
 }
 
@@ -742,7 +886,8 @@ async function downloadRemoteInstagramMedia(
   buffer: Buffer;
   contentType: string;
 }> {
-  const url = normalizeMediaUrl(rawUrl);
+  const url =
+    normalizeMediaUrl(rawUrl);
 
   if (!url) {
     throw new Error(
@@ -754,9 +899,11 @@ async function downloadRemoteInstagramMedia(
     headers: {
       "User-Agent":
         "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-      Referer: "https://www.instagram.com/",
+      Referer:
+        "https://www.instagram.com/",
     },
-    signal: AbortSignal.timeout(30000),
+    signal:
+      AbortSignal.timeout(30000),
   });
 
   if (!response.ok) {
@@ -768,10 +915,13 @@ async function downloadRemoteInstagramMedia(
   const arrayBuffer =
     await response.arrayBuffer();
 
-  const buffer = Buffer.from(arrayBuffer);
+  const buffer =
+    Buffer.from(arrayBuffer);
 
   const contentType =
-    response.headers.get("content-type") ||
+    response.headers.get(
+      "content-type"
+    ) ||
     "application/octet-stream";
 
   return {
@@ -784,379 +934,513 @@ async function downloadRemoteInstagramMedia(
    HEALTH
 ========================= */
 
-app.get("/api/health", (_req, res) => {
-  res.json({
-    success: true,
-    status: "ok",
-    service: "linkdrop-backend",
-    chromium: CHROMIUM_PATH,
-    timestamp: new Date().toISOString(),
-  });
-});
+app.get(
+  "/api/health",
+  (_req, res) => {
+    res.json({
+      success: true,
+      status: "ok",
+      service:
+        "linkdrop-backend",
+      chromium:
+        CHROMIUM_PATH,
+      timestamp:
+        new Date().toISOString(),
+    });
+  }
+);
 
 /* =========================
    DEBUG INSTAGRAM
 ========================= */
 
-app.get("/api/debug-instagram", async (req, res) => {
-  const rawUrl = String(req.query.url || "");
+app.get(
+  "/api/debug-instagram",
+  async (req, res) => {
+    const rawUrl =
+      String(
+        req.query.url || ""
+      );
 
-  if (!rawUrl) {
-    return res.status(400).json({
-      success: false,
-      message: "Query parameter url diperlukan.",
-    });
+    if (!rawUrl) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "Query parameter url diperlukan.",
+      });
+    }
+
+    if (!isInstagramUrl(rawUrl)) {
+      return res.status(400).json({
+        success: false,
+        message:
+          "URL harus berasal dari Instagram.",
+      });
+    }
+
+    const result =
+      await extractInstagramWithPlaywright(
+        rawUrl
+      );
+
+    return res.json(result);
   }
+);
 
-  if (!isInstagramUrl(rawUrl)) {
-    return res.status(400).json({
-      success: false,
-      message: "URL harus berasal dari Instagram.",
-    });
-  }
-
-  const result =
-    await extractInstagramWithPlaywright(rawUrl);
-
-  return res.json(result);
-});
 /* =========================
    DEBUG YT-DLP INSTAGRAM
 ========================= */
 
-app.get("/api/debug-ytdlp", async (req, res) => {
-  const rawUrl = String(req.query.url || "");
+app.get(
+  "/api/debug-ytdlp",
+  async (req, res) => {
+    const rawUrl =
+      String(
+        req.query.url || ""
+      );
 
-  if (!rawUrl) {
-    return res.status(400).json({
-      success: false,
-      message: "Query parameter url diperlukan.",
-    });
-  }
-
-  try {
-    const result = await execFileAsync(
-      "yt-dlp",
-      [
-        "--dump-single-json",
-        "--no-playlist",
-        "--no-warnings",
-        "--no-check-certificates",
-        rawUrl,
-      ],
-      {
-        timeout: 90000,
-        maxBuffer: 20 * 1024 * 1024,
-      }
-    );
-
-    const data = JSON.parse(result.stdout);
-
-    return res.json({
-      success: true,
-      id: data.id || "",
-      title: data.title || "",
-      webpage_url: data.webpage_url || rawUrl,
-      extractor: data.extractor || "",
-      ext: data.ext || "",
-      thumbnail: data.thumbnail || "",
-      duration: data.duration || null,
-      has_url: Boolean(data.url),
-      formats_count: Array.isArray(data.formats)
-        ? data.formats.length
-        : 0,
-    });
-  } catch (error: any) {
-    return res.status(500).json({
-      success: false,
-      message:
-        error?.stderr ||
-        error?.stdout ||
-        error?.message ||
-        "yt-dlp gagal memproses URL.",
-    });
-  }
-});
-/* =========================
-   ANALYZE
-========================= */
-
-app.post("/api/analyze", async (req, res) => {
-  try {
-    const parsed =
-      AnalyzeSchema.parse(req.body);
-
-    const rawUrl = parsed.url.trim();
-
-    if (isInstagramUrl(rawUrl)) {
-      const instagram =
-        await extractInstagramWithPlaywright(rawUrl);
-
-      /*
-       * Kalau single video, gunakan yt-dlp.
-       */
-      if (
-        instagram.success &&
-        instagram.isVideoPost &&
-        instagram.items.length === 1
-      ) {
-        return res.json({
-          success: true,
-          type: "video",
-          url: instagram.url,
-          title:
-            instagram.title ||
-            "Instagram Video",
-          thumbnail:
-            instagram.thumbnail ||
-            "",
-          itemCount: 1,
-          items: instagram.items,
-        });
-      }
-
-      if (
-        instagram.success &&
-        instagram.items.length > 0
-      ) {
-        return res.json({
-          success: true,
-          type: "image",
-          url: instagram.url,
-          title:
-            instagram.title ||
-            "Instagram Post",
-          thumbnail:
-            instagram.thumbnail ||
-            "",
-          itemCount:
-            instagram.items.length,
-          items: instagram.items,
-        });
-      }
-
-      /*
-       * Fallback terakhir: coba yt-dlp.
-       */
-      try {
-        const tempDir =
-          await fs.mkdtemp(
-            path.join(
-              os.tmpdir(),
-              "letsedrop-"
-            )
-          );
-
-        try {
-          const info =
-            await execFileAsync(
-              "yt-dlp",
-              [
-                "--dump-single-json",
-                "--no-playlist",
-                "--no-warnings",
-                rawUrl,
-              ],
-              {
-                timeout: 60000,
-                maxBuffer:
-                  10 * 1024 * 1024,
-              }
-            );
-
-          const data =
-            JSON.parse(info.stdout);
-
-          return res.json({
-            success: true,
-            type:
-              data.ext === "jpg" ||
-              data.ext === "jpeg" ||
-              data.ext === "png"
-                ? "image"
-                : "video",
-            url: rawUrl,
-            title:
-              data.title ||
-              "Instagram",
-            thumbnail:
-              data.thumbnail ||
-              "",
-            itemCount: 1,
-            items: [
-              {
-                type:
-                  data.ext === "jpg" ||
-                  data.ext === "jpeg" ||
-                  data.ext === "png"
-                    ? "image"
-                    : "video",
-                url:
-                  data.url ||
-                  rawUrl,
-                thumbnail:
-                  data.thumbnail ||
-                  undefined,
-              },
-            ],
-          });
-        } finally {
-          await fs.rm(
-            tempDir,
-            {
-              recursive: true,
-              force: true,
-            }
-          );
-        }
-      } catch {}
-
-      return res.status(422).json({
+    if (!rawUrl) {
+      return res.status(400).json({
         success: false,
         message:
-          instagram.error ||
-          "Postingan Instagram tidak ditemukan.",
+          "Query parameter url diperlukan.",
       });
     }
 
-    /*
-     * Non-Instagram:
-     * gunakan yt-dlp untuk URL publik yang didukung.
-     */
     try {
-      const info =
+      const result =
         await execFileAsync(
           "yt-dlp",
           [
             "--dump-single-json",
             "--no-playlist",
             "--no-warnings",
+            "--no-check-certificates",
             rawUrl,
           ],
           {
-            timeout: 60000,
+            timeout: 90000,
             maxBuffer:
-              10 * 1024 * 1024,
+              20 * 1024 * 1024,
           }
         );
 
       const data =
-        JSON.parse(info.stdout);
+        JSON.parse(
+          result.stdout
+        );
 
       return res.json({
         success: true,
-        type: "video",
-        url: rawUrl,
+        id:
+          data.id || "",
         title:
-          data.title ||
-          "Video",
-        thumbnail:
-          data.thumbnail ||
+          data.title || "",
+        webpage_url:
+          data.webpage_url ||
+          rawUrl,
+        extractor:
+          data.extractor ||
           "",
-        itemCount: 1,
-        items: [
-          {
-            type: "video",
-            url:
-              data.webpage_url ||
-              rawUrl,
-            thumbnail:
-              data.thumbnail ||
-              undefined,
-          },
-        ],
+        ext:
+          data.ext || "",
+        thumbnail:
+          data.thumbnail || "",
+        duration:
+          data.duration ||
+          null,
+        has_url:
+          Boolean(data.url),
+        formats_count:
+          Array.isArray(
+            data.formats
+          )
+            ? data.formats.length
+            : 0,
       });
     } catch (error: any) {
-      return res.status(422).json({
+      return res.status(500).json({
         success: false,
         message:
           error?.stderr ||
+          error?.stdout ||
           error?.message ||
-          "URL tidak dapat diproses.",
+          "yt-dlp gagal memproses URL.",
       });
     }
-  } catch (error: any) {
-    if (error instanceof z.ZodError) {
-      return res.status(400).json({
-        success: false,
-        message: "URL tidak valid.",
-      });
-    }
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error?.message ||
-        "Gagal memproses URL.",
-    });
   }
-});
+);
+
+/* =========================
+   ANALYZE
+========================= */
+
+app.post(
+  "/api/analyze",
+  async (req, res) => {
+    try {
+      const parsed =
+        AnalyzeSchema.parse(
+          req.body
+        );
+
+      const rawUrl =
+        parsed.url.trim();
+
+      if (isInstagramUrl(rawUrl)) {
+        /*
+         * Pertama tetap coba jalur
+         * Playwright yang sudah bekerja
+         * untuk video Instagram.
+         */
+        const instagram =
+          await extractInstagramWithPlaywright(
+            rawUrl
+          );
+
+        /*
+         * Single video:
+         * pertahankan behavior lama.
+         */
+        if (
+          instagram.success &&
+          instagram.isVideoPost &&
+          instagram.items.length === 1
+        ) {
+          return res.json({
+            success: true,
+            type: "video",
+            url:
+              instagram.url,
+            title:
+              instagram.title ||
+              "Instagram Video",
+            thumbnail:
+              instagram.thumbnail ||
+              "",
+            itemCount: 1,
+            items:
+              instagram.items,
+          });
+        }
+
+        /*
+         * Foto / carousel:
+         * gunakan Apify.
+         */
+        const apify =
+          await extractInstagramWithApify(
+            rawUrl
+          );
+
+        if (
+          apify.success &&
+          apify.items.length > 0
+        ) {
+          return res.json({
+            success: true,
+            type: "image",
+            url:
+              apify.url,
+            title:
+              apify.title ||
+              "Instagram Post",
+            thumbnail:
+              apify.thumbnail ||
+              "",
+            itemCount:
+              apify.itemCount,
+            items:
+              apify.items,
+          });
+        }
+
+        /*
+         * Kalau Apify gagal,
+         * gunakan hasil Playwright
+         * kalau ternyata tersedia.
+         */
+        if (
+          instagram.success &&
+          instagram.items.length > 0
+        ) {
+          return res.json({
+            success: true,
+            type: "image",
+            url:
+              instagram.url,
+            title:
+              instagram.title ||
+              "Instagram Post",
+            thumbnail:
+              instagram.thumbnail ||
+              "",
+            itemCount:
+              instagram.items.length,
+            items:
+              instagram.items,
+          });
+        }
+
+        /*
+         * Fallback terakhir:
+         * coba yt-dlp.
+         */
+        try {
+          const tempDir =
+            await fs.mkdtemp(
+              path.join(
+                os.tmpdir(),
+                "letsedrop-"
+              )
+            );
+
+          try {
+            const info =
+              await execFileAsync(
+                "yt-dlp",
+                [
+                  "--dump-single-json",
+                  "--no-playlist",
+                  "--no-warnings",
+                  rawUrl,
+                ],
+                {
+                  timeout: 60000,
+                  maxBuffer:
+                    10 * 1024 * 1024,
+                }
+              );
+
+            const data =
+              JSON.parse(
+                info.stdout
+              );
+
+            return res.json({
+              success: true,
+              type:
+                data.ext === "jpg" ||
+                data.ext === "jpeg" ||
+                data.ext === "png"
+                  ? "image"
+                  : "video",
+              url: rawUrl,
+              title:
+                data.title ||
+                "Instagram",
+              thumbnail:
+                data.thumbnail ||
+                "",
+              itemCount: 1,
+              items: [
+                {
+                  type:
+                    data.ext === "jpg" ||
+                    data.ext === "jpeg" ||
+                    data.ext === "png"
+                      ? "image"
+                      : "video",
+                  url:
+                    data.url ||
+                    rawUrl,
+                  thumbnail:
+                    data.thumbnail ||
+                    undefined,
+                },
+              ],
+            });
+          } finally {
+            await fs.rm(
+              tempDir,
+              {
+                recursive: true,
+                force: true,
+              }
+            );
+          }
+        } catch {}
+
+        return res.status(422).json({
+          success: false,
+          message:
+            apify.error ||
+            instagram.error ||
+            "Postingan Instagram tidak ditemukan.",
+        });
+      }
+
+      /*
+       * Non-Instagram:
+       * gunakan yt-dlp untuk URL publik
+       * yang didukung.
+       */
+      try {
+        const info =
+          await execFileAsync(
+            "yt-dlp",
+            [
+              "--dump-single-json",
+              "--no-playlist",
+              "--no-warnings",
+              rawUrl,
+            ],
+            {
+              timeout: 60000,
+              maxBuffer:
+                10 * 1024 * 1024,
+            }
+          );
+
+        const data =
+          JSON.parse(
+            info.stdout
+          );
+
+        return res.json({
+          success: true,
+          type: "video",
+          url: rawUrl,
+          title:
+            data.title ||
+            "Video",
+          thumbnail:
+            data.thumbnail ||
+            "",
+          itemCount: 1,
+          items: [
+            {
+              type: "video",
+              url:
+                data.webpage_url ||
+                rawUrl,
+              thumbnail:
+                data.thumbnail ||
+                undefined,
+            },
+          ],
+        });
+      } catch (error: any) {
+        return res.status(422).json({
+          success: false,
+          message:
+            error?.stderr ||
+            error?.message ||
+            "URL tidak dapat diproses.",
+        });
+      }
+    } catch (error: any) {
+      if (
+        error instanceof
+        z.ZodError
+      ) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "URL tidak valid.",
+        });
+      }
+
+      return res.status(500).json({
+        success: false,
+        message:
+          error?.message ||
+          "Gagal memproses URL.",
+      });
+    }
+  }
+);
 
 /* =========================
    DOWNLOAD VIDEO
 ========================= */
 
-app.post("/api/download", async (req, res) => {
-  let tempDir: string | null = null;
+app.post(
+  "/api/download",
+  async (req, res) => {
+    let tempDir:
+      string | null = null;
 
-  try {
-    const parsed =
-      DownloadSchema.parse(req.body);
+    try {
+      const parsed =
+        DownloadSchema.parse(
+          req.body
+        );
 
-    tempDir =
-      await fs.mkdtemp(
+      tempDir =
+        await fs.mkdtemp(
+          path.join(
+            os.tmpdir(),
+            "letsedrop-download-"
+          )
+        );
+
+      await runYtDlp(
+        parsed.url,
+        tempDir
+      );
+
+      const files =
+        await fs.readdir(
+          tempDir
+        );
+
+      const mediaFiles =
+        files.filter(
+          (file) =>
+            !file.endsWith(".part") &&
+            !file.endsWith(".ytdl")
+        );
+
+      if (!mediaFiles.length) {
+        throw new Error(
+          "File hasil download tidak ditemukan."
+        );
+      }
+
+      const filename =
+        mediaFiles[0];
+
+      const filePath =
         path.join(
-          os.tmpdir(),
-          "letsedrop-download-"
-        )
+          tempDir,
+          filename
+        );
+
+      const stat =
+        await fs.stat(
+          filePath
+        );
+
+      res.setHeader(
+        "Content-Length",
+        stat.size
       );
 
-    await runYtDlp(
-      parsed.url,
-      tempDir
-    );
-
-    const files =
-      await fs.readdir(tempDir);
-
-    const mediaFiles =
-      files.filter(
-        (file) =>
-          !file.endsWith(".part") &&
-          !file.endsWith(".ytdl")
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${safeFilename(
+          filename
+        )}"`
       );
 
-    if (!mediaFiles.length) {
-      throw new Error(
-        "File hasil download tidak ditemukan."
+      res.sendFile(
+        filePath,
+        async () => {
+          if (tempDir) {
+            await fs.rm(
+              tempDir,
+              {
+                recursive: true,
+                force: true,
+              }
+            );
+          }
+        }
       );
-    }
 
-    const filename =
-      mediaFiles[0];
-
-    const filePath =
-      path.join(
-        tempDir,
-        filename
-      );
-
-    const stat =
-      await fs.stat(filePath);
-
-    res.setHeader(
-      "Content-Length",
-      stat.size
-    );
-
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${safeFilename(
-        filename
-      )}"`
-    );
-
-    res.sendFile(filePath, async () => {
+      return;
+    } catch (error: any) {
       if (tempDir) {
         await fs.rm(
           tempDir,
@@ -1164,31 +1448,19 @@ app.post("/api/download", async (req, res) => {
             recursive: true,
             force: true,
           }
-        );
+        ).catch(() => {});
       }
-    });
 
-    return;
-  } catch (error: any) {
-    if (tempDir) {
-      await fs.rm(
-        tempDir,
-        {
-          recursive: true,
-          force: true,
-        }
-      ).catch(() => {});
+      return res.status(500).json({
+        success: false,
+        message:
+          error?.stderr ||
+          error?.message ||
+          "Gagal mendownload media.",
+      });
     }
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error?.stderr ||
-        error?.message ||
-        "Gagal mendownload media.",
-    });
   }
-});
+);
 
 /* =========================
    DOWNLOAD INSTAGRAM MEDIA
@@ -1269,9 +1541,13 @@ app.post(
         );
 
       const extension =
-        result.contentType.includes("png")
+        result.contentType.includes(
+          "png"
+        )
           ? "png"
-          : result.contentType.includes("webp")
+          : result.contentType.includes(
+              "webp"
+            )
           ? "webp"
           : "jpg";
 
@@ -1306,8 +1582,12 @@ app.post(
    START
 ========================= */
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(
-    `Letsedrop backend running on port ${PORT}`
-  );
-});
+app.listen(
+  PORT,
+  "0.0.0.0",
+  () => {
+    console.log(
+      `Letsedrop backend running on port ${PORT}`
+    );
+  }
+);

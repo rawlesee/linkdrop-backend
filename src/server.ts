@@ -820,7 +820,63 @@ app.get("/api/debug-instagram", async (req, res) => {
 
   return res.json(result);
 });
+/* =========================
+   DEBUG YT-DLP INSTAGRAM
+========================= */
 
+app.get("/api/debug-ytdlp", async (req, res) => {
+  const rawUrl = String(req.query.url || "");
+
+  if (!rawUrl) {
+    return res.status(400).json({
+      success: false,
+      message: "Query parameter url diperlukan.",
+    });
+  }
+
+  try {
+    const result = await execFileAsync(
+      "yt-dlp",
+      [
+        "--dump-single-json",
+        "--no-playlist",
+        "--no-warnings",
+        "--no-check-certificates",
+        rawUrl,
+      ],
+      {
+        timeout: 90000,
+        maxBuffer: 20 * 1024 * 1024,
+      }
+    );
+
+    const data = JSON.parse(result.stdout);
+
+    return res.json({
+      success: true,
+      id: data.id || "",
+      title: data.title || "",
+      webpage_url: data.webpage_url || rawUrl,
+      extractor: data.extractor || "",
+      ext: data.ext || "",
+      thumbnail: data.thumbnail || "",
+      duration: data.duration || null,
+      has_url: Boolean(data.url),
+      formats_count: Array.isArray(data.formats)
+        ? data.formats.length
+        : 0,
+    });
+  } catch (error: any) {
+    return res.status(500).json({
+      success: false,
+      message:
+        error?.stderr ||
+        error?.stdout ||
+        error?.message ||
+        "yt-dlp gagal memproses URL.",
+    });
+  }
+});
 /* =========================
    ANALYZE
 ========================= */

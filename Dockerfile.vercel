@@ -8,9 +8,10 @@ RUN apt-get update && apt-get install -y \
     ffmpeg \
     ca-certificates \
     curl \
+    chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp nightly + request impersonation support + gallery-dl
+# Install yt-dlp + gallery-dl
 RUN pip3 install --break-system-packages --no-cache-dir \
     -U --pre yt-dlp \
     curl-cffi \
@@ -26,6 +27,7 @@ COPY src ./src
 RUN npm run build
 
 ENV PORT=3000
+ENV CHROMIUM_PATH=/usr/bin/chromium
 
 EXPOSE 3000
 

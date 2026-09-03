@@ -16,13 +16,19 @@ const execFileAsync = promisify(execFile);
 const app = express();
 
 app.use(helmet());
+
 app.use(
   cors({
     origin: true,
     methods: ["GET", "POST", "OPTIONS"],
   })
 );
-app.use(express.json({ limit: "1mb" }));
+
+app.use(
+  express.json({
+    limit: "1mb",
+  })
+);
 
 const limiter = rateLimit({
   windowMs: 60 * 1000,
@@ -33,13 +39,19 @@ const limiter = rateLimit({
 
 app.use("/api/", limiter);
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(
+  process.env.PORT || 3000
+);
+
 const CHROMIUM_PATH =
-  process.env.CHROMIUM_PATH || "/usr/bin/chromium";
+  process.env.CHROMIUM_PATH ||
+  "/usr/bin/chromium";
 
 const MAX_INSTAGRAM_CAROUSEL_ITEMS = 30;
 
-type MediaType = "image" | "video";
+type MediaType =
+  | "image"
+  | "video";
 
 interface ExtractedMediaItem {
   type: MediaType;
@@ -58,28 +70,40 @@ interface InstagramResult {
   error?: string;
 }
 
-const AnalyzeSchema = z.object({
-  url: z.string().url(),
-});
+const AnalyzeSchema =
+  z.object({
+    url: z.string().url(),
+  });
 
-const DownloadSchema = z.object({
-  url: z.string().url(),
-});
+const DownloadSchema =
+  z.object({
+    url: z.string().url(),
+  });
 
-function isInstagramUrl(rawUrl: string): boolean {
+/* =========================
+   INSTAGRAM HELPERS
+========================= */
+
+function isInstagramUrl(
+  rawUrl: string
+): boolean {
   try {
     const u = new URL(rawUrl);
 
     return (
-      u.hostname === "instagram.com" ||
-      u.hostname === "www.instagram.com"
+      u.hostname ===
+        "instagram.com" ||
+      u.hostname ===
+        "www.instagram.com"
     );
   } catch {
     return false;
   }
 }
 
-function cleanInstagramUrl(rawUrl: string): string {
+function cleanInstagramUrl(
+  rawUrl: string
+): string {
   try {
     const u = new URL(rawUrl);
 
@@ -89,28 +113,50 @@ function cleanInstagramUrl(rawUrl: string): string {
   }
 }
 
-function isAllowedInstagramMediaUrl(rawUrl: string): boolean {
+function isAllowedInstagramMediaUrl(
+  rawUrl: string
+): boolean {
   try {
     const u = new URL(rawUrl);
-    const host = u.hostname.toLowerCase();
+
+    const host =
+      u.hostname.toLowerCase();
 
     return (
-      host.endsWith("cdninstagram.com") ||
-      host.endsWith("fbcdn.net") ||
-      host.endsWith("instagram.com")
+      host.endsWith(
+        "cdninstagram.com"
+      ) ||
+      host.endsWith(
+        "fbcdn.net"
+      ) ||
+      host.endsWith(
+        "instagram.com"
+      )
     );
   } catch {
     return false;
   }
 }
 
-function normalizeMediaUrl(rawUrl: string): string | null {
-  if (!rawUrl) return null;
+function normalizeMediaUrl(
+  rawUrl: string
+): string | null {
+  if (!rawUrl) {
+    return null;
+  }
 
   try {
-    const decoded = rawUrl.replace(/&amp;/g, "&");
+    const decoded =
+      rawUrl.replace(
+        /&amp;/g,
+        "&"
+      );
 
-    if (!isAllowedInstagramMediaUrl(decoded)) {
+    if (
+      !isAllowedInstagramMediaUrl(
+        decoded
+      )
+    ) {
       return null;
     }
 
@@ -123,20 +169,30 @@ function normalizeMediaUrl(rawUrl: string): string | null {
 function uniqueMedia(
   items: ExtractedMediaItem[]
 ): ExtractedMediaItem[] {
-  const seen = new Set<string>();
-  const result: ExtractedMediaItem[] = [];
+  const seen =
+    new Set<string>();
+
+  const result: ExtractedMediaItem[] =
+    [];
 
   for (const item of items) {
-    if (!item.url) continue;
+    if (!item.url) {
+      continue;
+    }
 
     let key = item.url;
 
     try {
-      const u = new URL(item.url);
-      key = `${u.hostname}${u.pathname}`;
+      const u =
+        new URL(item.url);
+
+      key =
+        `${u.hostname}${u.pathname}`;
     } catch {}
 
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {
+      continue;
+    }
 
     seen.add(key);
     result.push(item);
@@ -145,10 +201,17 @@ function uniqueMedia(
   return result;
 }
 
+/* =========================
+   PLAYWRIGHT
+========================= */
+
 async function launchBrowser(): Promise<Browser> {
   return chromium.launch({
-    executablePath: CHROMIUM_PATH,
+    executablePath:
+      CHROMIUM_PATH,
+
     headless: true,
+
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
@@ -164,24 +227,33 @@ async function launchBrowser(): Promise<Browser> {
 async function waitForInstagram(
   page: Page
 ): Promise<void> {
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(
+    2500
+  );
 
   try {
-    await page.waitForLoadState("domcontentloaded", {
-      timeout: 10000,
-    });
+    await page.waitForLoadState(
+      "domcontentloaded",
+      {
+        timeout: 10000,
+      }
+    );
   } catch {}
 
-  await page.waitForTimeout(2500);
+  await page.waitForTimeout(
+    2500
+  );
 }
 
 async function getPageText(
   page: Page
 ): Promise<string> {
   try {
-    return await page.locator("body").innerText({
-      timeout: 5000,
-    });
+    return await page
+      .locator("body")
+      .innerText({
+        timeout: 5000,
+      });
   } catch {
     return "";
   }
@@ -190,7 +262,8 @@ async function getPageText(
 function looksLikeInstagramLoginPage(
   text: string
 ): boolean {
-  const lower = text.toLowerCase();
+  const lower =
+    text.toLowerCase();
 
   return (
     lower.includes("log in") &&
@@ -201,13 +274,22 @@ function looksLikeInstagramLoginPage(
 function looksLikeInstagramChallenge(
   text: string
 ): boolean {
-  const lower = text.toLowerCase();
+  const lower =
+    text.toLowerCase();
 
   return (
-    lower.includes("challenge_required") ||
-    lower.includes("suspicious login") ||
-    lower.includes("confirm your identity") ||
-    lower.includes("try again later")
+    lower.includes(
+      "challenge_required"
+    ) ||
+    lower.includes(
+      "suspicious login"
+    ) ||
+    lower.includes(
+      "confirm your identity"
+    ) ||
+    lower.includes(
+      "try again later"
+    )
   );
 }
 
@@ -215,24 +297,37 @@ async function extractFromPerformanceEntries(
   page: Page
 ): Promise<ExtractedMediaItem[]> {
   try {
-    const urls = await page.evaluate(() => {
-      const entries = performance.getEntriesByType(
-        "resource"
-      ) as PerformanceResourceTiming[];
+    const urls =
+      await page.evaluate(
+        () => {
+          const entries =
+            performance.getEntriesByType(
+              "resource"
+            ) as PerformanceResourceTiming[];
 
-      return entries
-        .map((e) => e.name)
-        .filter(Boolean);
-    });
+          return entries
+            .map(
+              (e) => e.name
+            )
+            .filter(Boolean);
+        }
+      );
 
-    const items: ExtractedMediaItem[] = [];
+    const items: ExtractedMediaItem[] =
+      [];
 
     for (const rawUrl of urls) {
-      const url = normalizeMediaUrl(rawUrl);
+      const url =
+        normalizeMediaUrl(
+          rawUrl
+        );
 
-      if (!url) continue;
+      if (!url) {
+        continue;
+      }
 
-      const lower = url.toLowerCase();
+      const lower =
+        url.toLowerCase();
 
       if (
         lower.includes(".mp4") ||
@@ -251,7 +346,9 @@ async function extractFromPerformanceEntries(
       }
     }
 
-    return uniqueMedia(items);
+    return uniqueMedia(
+      items
+    );
   } catch {
     return [];
   }
@@ -260,105 +357,158 @@ async function extractFromPerformanceEntries(
 async function extractVisibleMedia(
   page: Page
 ): Promise<ExtractedMediaItem[]> {
-  const items = await page.evaluate(() => {
-    const result: {
-      type: "image" | "video";
-      url: string;
-      thumbnail?: string;
-      area: number;
-    }[] = [];
+  const items =
+    await page.evaluate(
+      () => {
+        const result: {
+          type:
+            | "image"
+            | "video";
+          url: string;
+          thumbnail?: string;
+          area: number;
+        }[] = [];
 
-    const addImage = (
-      el: HTMLImageElement,
-      url?: string
-    ) => {
-      const src =
-        url ||
-        el.currentSrc ||
-        el.src ||
-        el.getAttribute("data-src") ||
-        "";
+        const addImage = (
+          el: HTMLImageElement,
+          url?: string
+        ) => {
+          const src =
+            url ||
+            el.currentSrc ||
+            el.src ||
+            el.getAttribute(
+              "data-src"
+            ) ||
+            "";
 
-      if (!src) return;
+          if (!src) {
+            return;
+          }
 
-      const rect = el.getBoundingClientRect();
+          const rect =
+            el.getBoundingClientRect();
 
-      const area =
-        Math.max(0, rect.width) *
-        Math.max(0, rect.height);
+          const area =
+            Math.max(
+              0,
+              rect.width
+            ) *
+            Math.max(
+              0,
+              rect.height
+            );
 
-      result.push({
-        type: "image",
-        url: src,
-        area,
-      });
-    };
+          result.push({
+            type: "image",
+            url: src,
+            area,
+          });
+        };
 
-    const addVideo = (
-      el: HTMLVideoElement,
-      url?: string
-    ) => {
-      const src =
-        url ||
-        el.currentSrc ||
-        el.src ||
-        el.querySelector("source")?.src ||
-        "";
+        const addVideo = (
+          el: HTMLVideoElement,
+          url?: string
+        ) => {
+          const src =
+            url ||
+            el.currentSrc ||
+            el.src ||
+            el.querySelector(
+              "source"
+            )?.src ||
+            "";
 
-      if (!src) return;
+          if (!src) {
+            return;
+          }
 
-      const rect = el.getBoundingClientRect();
+          const rect =
+            el.getBoundingClientRect();
 
-      const area =
-        Math.max(0, rect.width) *
-        Math.max(0, rect.height);
+          const area =
+            Math.max(
+              0,
+              rect.width
+            ) *
+            Math.max(
+              0,
+              rect.height
+            );
 
-      result.push({
-        type: "video",
-        url: src,
-        thumbnail: el.poster || undefined,
-        area,
-      });
-    };
+          result.push({
+            type: "video",
+            url: src,
+            thumbnail:
+              el.poster ||
+              undefined,
+            area,
+          });
+        };
 
-    document
-      .querySelectorAll("img")
-      .forEach((el) => addImage(el));
+        document
+          .querySelectorAll(
+            "img"
+          )
+          .forEach((el) =>
+            addImage(el)
+          );
 
-    document
-      .querySelectorAll("video")
-      .forEach((el) => addVideo(el));
+        document
+          .querySelectorAll(
+            "video"
+          )
+          .forEach((el) =>
+            addVideo(el)
+          );
 
-    return result
-      .sort((a, b) => b.area - a.area)
-      .slice(0, 20);
-  });
+        return result
+          .sort(
+            (a, b) =>
+              b.area - a.area
+          )
+          .slice(0, 20);
+      }
+    );
 
-  const normalized: ExtractedMediaItem[] = [];
+  const normalized: ExtractedMediaItem[] =
+    [];
 
   for (const item of items) {
-    const url = normalizeMediaUrl(item.url);
+    const url =
+      normalizeMediaUrl(
+        item.url
+      );
 
-    if (!url) continue;
+    if (!url) {
+      continue;
+    }
 
     normalized.push({
       type: item.type,
       url,
-      thumbnail: item.thumbnail
-        ? normalizeMediaUrl(item.thumbnail) ||
-          undefined
-        : undefined,
+      thumbnail:
+        item.thumbnail
+          ? normalizeMediaUrl(
+              item.thumbnail
+            ) ||
+            undefined
+          : undefined,
     });
   }
 
-  return uniqueMedia(normalized);
+  return uniqueMedia(
+    normalized
+  );
 }
 
 async function getBestCurrentMedia(
   page: Page
 ): Promise<ExtractedMediaItem | null> {
   const candidates =
-    await extractVisibleMedia(page);
+    await extractVisibleMedia(
+      page
+    );
 
   if (!candidates.length) {
     return null;
@@ -367,7 +517,9 @@ async function getBestCurrentMedia(
   return candidates[0];
 }
 
-async function findNextButton(page: Page) {
+async function findNextButton(
+  page: Page
+) {
   const selectors = [
     'button[aria-label*="Next"]',
     'button[aria-label*="next"]',
@@ -380,23 +532,34 @@ async function findNextButton(page: Page) {
   ];
 
   for (const selector of selectors) {
-    const locator = page.locator(selector);
+    const locator =
+      page.locator(
+        selector
+      );
 
     try {
-      const count = await locator.count();
+      const count =
+        await locator.count();
 
       if (count > 0) {
         for (
           let i = 0;
-          i < Math.min(count, 5);
+          i <
+          Math.min(
+            count,
+            5
+          );
           i++
         ) {
-          const el = locator.nth(i);
+          const el =
+            locator.nth(i);
 
           if (
             await el
               .isVisible()
-              .catch(() => false)
+              .catch(
+                () => false
+              )
           ) {
             return el;
           }
@@ -411,38 +574,61 @@ async function findNextButton(page: Page) {
 async function extractInstagramWithPlaywright(
   rawUrl: string
 ): Promise<InstagramResult> {
-  const url = cleanInstagramUrl(rawUrl);
+  const url =
+    cleanInstagramUrl(
+      rawUrl
+    );
 
-  let browser: Browser | null = null;
+  let browser:
+    | Browser
+    | null = null;
 
   try {
-    browser = await launchBrowser();
+    browser =
+      await launchBrowser();
 
-    const context = await browser.newContext({
-      viewport: {
-        width: 1280,
-        height: 900,
-      },
-      userAgent:
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-      locale: "en-US",
-      timezoneId: "Asia/Jakarta",
-    });
+    const context =
+      await browser.newContext({
+        viewport: {
+          width: 1280,
+          height: 900,
+        },
 
-    const page = await context.newPage();
+        userAgent:
+          "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+
+        locale: "en-US",
+
+        timezoneId:
+          "Asia/Jakarta",
+      });
+
+    const page =
+      await context.newPage();
 
     await page.goto(url, {
-      waitUntil: "domcontentloaded",
+      waitUntil:
+        "domcontentloaded",
       timeout: 30000,
     });
 
-    await waitForInstagram(page);
+    await waitForInstagram(
+      page
+    );
 
-    const finalUrl = page.url();
+    const finalUrl =
+      page.url();
 
-    const text = await getPageText(page);
+    const text =
+      await getPageText(
+        page
+      );
 
-    if (looksLikeInstagramChallenge(text)) {
+    if (
+      looksLikeInstagramChallenge(
+        text
+      )
+    ) {
       return {
         success: false,
         url,
@@ -457,8 +643,12 @@ async function extractInstagramWithPlaywright(
     }
 
     if (
-      finalUrl.includes("/accounts/login") ||
-      looksLikeInstagramLoginPage(text)
+      finalUrl.includes(
+        "/accounts/login"
+      ) ||
+      looksLikeInstagramLoginPage(
+        text
+      )
     ) {
       return {
         success: false,
@@ -473,50 +663,75 @@ async function extractInstagramWithPlaywright(
       };
     }
 
-    const items: ExtractedMediaItem[] = [];
+    const items: ExtractedMediaItem[] =
+      [];
 
     const firstMedia =
-      await getBestCurrentMedia(page);
+      await getBestCurrentMedia(
+        page
+      );
 
     if (firstMedia) {
-      items.push(firstMedia);
+      items.push(
+        firstMedia
+      );
     }
 
     if (!items.length) {
       const networkItems =
-        await extractFromPerformanceEntries(page);
+        await extractFromPerformanceEntries(
+          page
+        );
 
-      if (networkItems.length) {
-        items.push(networkItems[0]);
+      if (
+        networkItems.length
+      ) {
+        items.push(
+          networkItems[0]
+        );
       }
     }
 
-    const visited = new Set<string>();
+    const visited =
+      new Set<string>();
 
     for (
       let slide = 0;
       slide <
-      MAX_INSTAGRAM_CAROUSEL_ITEMS - 1;
+      MAX_INSTAGRAM_CAROUSEL_ITEMS -
+        1;
       slide++
     ) {
       const current =
-        items[items.length - 1];
+        items[
+          items.length - 1
+        ];
 
-      if (!current) break;
+      if (!current) {
+        break;
+      }
 
-      let currentKey = current.url;
+      let currentKey =
+        current.url;
 
       try {
-        const u = new URL(current.url);
+        const u =
+          new URL(
+            current.url
+          );
 
         currentKey =
           `${u.hostname}${u.pathname}`;
       } catch {}
 
-      visited.add(currentKey);
+      visited.add(
+        currentKey
+      );
 
       const nextButton =
-        await findNextButton(page);
+        await findNextButton(
+          page
+        );
 
       if (!nextButton) {
         break;
@@ -526,12 +741,18 @@ async function extractInstagramWithPlaywright(
         .click({
           timeout: 3000,
         })
-        .catch(() => null);
+        .catch(
+          () => null
+        );
 
-      await page.waitForTimeout(900);
+      await page.waitForTimeout(
+        900
+      );
 
       let nextMedia =
-        await getBestCurrentMedia(page);
+        await getBestCurrentMedia(
+          page
+        );
 
       if (
         nextMedia &&
@@ -539,7 +760,9 @@ async function extractInstagramWithPlaywright(
           (() => {
             try {
               const u =
-                new URL(nextMedia.url);
+                new URL(
+                  nextMedia.url
+                );
 
               return `${u.hostname}${u.pathname}`;
             } catch {
@@ -548,49 +771,65 @@ async function extractInstagramWithPlaywright(
           })()
         )
       ) {
-        await page.waitForTimeout(1200);
+        await page.waitForTimeout(
+          1200
+        );
 
         nextMedia =
-          await getBestCurrentMedia(page);
+          await getBestCurrentMedia(
+            page
+          );
       }
 
       if (!nextMedia) {
         break;
       }
 
-      let nextKey = nextMedia.url;
+      let nextKey =
+        nextMedia.url;
 
       try {
-        const u = new URL(nextMedia.url);
+        const u =
+          new URL(
+            nextMedia.url
+          );
 
         nextKey =
           `${u.hostname}${u.pathname}`;
       } catch {}
 
-      if (visited.has(nextKey)) {
-        break;
-      }
-
       if (
-        nextMedia.type === "video" &&
-        !nextMedia.url
+        visited.has(
+          nextKey
+        )
       ) {
         break;
       }
 
-      items.push(nextMedia);
-      visited.add(nextKey);
+      items.push(
+        nextMedia
+      );
+
+      visited.add(
+        nextKey
+      );
     }
 
     const finalItems =
-      uniqueMedia(items).slice(
+      uniqueMedia(
+        items
+      ).slice(
         0,
         MAX_INSTAGRAM_CAROUSEL_ITEMS
       );
 
-    if (!finalItems.length) {
+    if (
+      !finalItems.length
+    ) {
       const networkItems =
-        await extractFromPerformanceEntries(page);
+        await extractFromPerformanceEntries(
+          page
+        );
 
       const usableNetworkItems =
         networkItems
@@ -604,11 +843,14 @@ async function extractInstagramWithPlaywright(
             MAX_INSTAGRAM_CAROUSEL_ITEMS
           );
 
-      if (usableNetworkItems.length) {
+      if (
+        usableNetworkItems.length
+      ) {
         const hasVideo =
           usableNetworkItems.some(
             (item) =>
-              item.type === "video"
+              item.type ===
+              "video"
           );
 
         return {
@@ -616,19 +858,23 @@ async function extractInstagramWithPlaywright(
           url,
           isVideoPost:
             hasVideo &&
-            usableNetworkItems.length === 1,
+            usableNetworkItems.length ===
+              1,
           title: "",
           thumbnail:
-            usableNetworkItems[0]?.url ||
-            "",
+            usableNetworkItems[0]
+              ?.url || "",
           itemCount:
             usableNetworkItems.length,
-          items: usableNetworkItems,
+          items:
+            usableNetworkItems,
         };
       }
     }
 
-    if (!finalItems.length) {
+    if (
+      !finalItems.length
+    ) {
       return {
         success: false,
         url,
@@ -643,8 +889,10 @@ async function extractInstagramWithPlaywright(
     }
 
     if (
-      finalItems.length === 1 &&
-      finalItems[0].type === "video"
+      finalItems.length ===
+        1 &&
+      finalItems[0].type ===
+        "video"
     ) {
       return {
         success: true,
@@ -652,10 +900,12 @@ async function extractInstagramWithPlaywright(
         isVideoPost: true,
         title: "",
         thumbnail:
-          finalItems[0].thumbnail ||
+          finalItems[0]
+            .thumbnail ||
           finalItems[0].url,
         itemCount: 1,
-        items: finalItems,
+        items:
+          finalItems,
       };
     }
 
@@ -665,11 +915,15 @@ async function extractInstagramWithPlaywright(
       isVideoPost: false,
       title: "",
       thumbnail:
-        finalItems[0]?.thumbnail ||
-        finalItems[0]?.url ||
+        finalItems[0]
+          ?.thumbnail ||
+        finalItems[0]
+          ?.url ||
         "",
-      itemCount: finalItems.length,
-      items: finalItems,
+      itemCount:
+        finalItems.length,
+      items:
+        finalItems,
     };
   } catch (error: any) {
     return {
@@ -686,7 +940,9 @@ async function extractInstagramWithPlaywright(
     };
   } finally {
     if (browser) {
-      await browser.close().catch(() => {});
+      await browser
+        .close()
+        .catch(() => {});
     }
   }
 }
@@ -710,22 +966,32 @@ async function extractInstagramWithApify(
   }
 
   try {
-    const response = await fetch(
-      "https://api.apify.com/v2/actors/crawlerbros~instagram-post-scraper/run-sync-get-dataset-items",
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          post_urls: [rawUrl],
-        }),
-        signal: AbortSignal.timeout(
-          120000
-        ),
-      }
-    );
+    const response =
+      await fetch(
+        "https://api.apify.com/v2/actors/crawlerbros~instagram-post-scraper/run-sync-get-dataset-items",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+
+            Authorization:
+              `Bearer ${token}`,
+          },
+
+          body: JSON.stringify({
+            post_urls: [
+              rawUrl,
+            ],
+          }),
+
+          signal:
+            AbortSignal.timeout(
+              120000
+            ),
+        }
+      );
 
     if (!response.ok) {
       const text =
@@ -742,7 +1008,9 @@ async function extractInstagramWithApify(
       await response.json();
 
     if (
-      !Array.isArray(data) ||
+      !Array.isArray(
+        data
+      ) ||
       data.length === 0
     ) {
       return {
@@ -752,9 +1020,13 @@ async function extractInstagramWithApify(
       };
     }
 
-    const post = data[0];
+    const post =
+      data[0];
 
-    if (post.status !== "success") {
+    if (
+      post.status !==
+      "success"
+    ) {
       return {
         success: false,
         error:
@@ -766,40 +1038,49 @@ async function extractInstagramWithApify(
     }
 
     const mediaItems =
-      Array.isArray(post.media_items)
+      Array.isArray(
+        post.media_items
+      )
         ? post.media_items.slice(
             0,
             MAX_INSTAGRAM_CAROUSEL_ITEMS
           )
         : [];
 
-    const normalizedItems: ExtractedMediaItem[] =
+    const normalizedItems:
+      ExtractedMediaItem[] =
       mediaItems
-        .map((item: any) => {
-          const mediaUrl =
-            typeof item.url === "string"
-              ? item.url
-              : "";
-
-          if (!mediaUrl) {
-            return null;
-          }
-
-          return {
-            type:
-              String(item.type)
-                .toLowerCase() ===
-              "video"
-                ? "video"
-                : "image",
-            url: mediaUrl,
-            thumbnail:
-              typeof item.thumbnail_url ===
+        .map(
+          (item: any) => {
+            const mediaUrl =
+              typeof item.url ===
               "string"
-                ? item.thumbnail_url
-                : mediaUrl,
-          } as ExtractedMediaItem;
-        })
+                ? item.url
+                : "";
+
+            if (!mediaUrl) {
+              return null;
+            }
+
+            return {
+              type:
+                String(
+                  item.type
+                ).toLowerCase() ===
+                "video"
+                  ? "video"
+                  : "image",
+
+              url: mediaUrl,
+
+              thumbnail:
+                typeof item.thumbnail_url ===
+                "string"
+                  ? item.thumbnail_url
+                  : mediaUrl,
+            } as ExtractedMediaItem;
+          }
+        )
         .filter(
           (
             item:
@@ -811,19 +1092,26 @@ async function extractInstagramWithApify(
 
     return {
       success: true,
+
       url:
         post.post_url ||
         rawUrl,
+
       title:
         post.caption ||
         "Instagram Post",
+
       thumbnail:
         post.thumbnail_url ||
-        normalizedItems[0]?.thumbnail ||
+        normalizedItems[0]
+          ?.thumbnail ||
         "",
+
       itemCount:
         normalizedItems.length,
-      items: normalizedItems,
+
+      items:
+        normalizedItems,
     };
   } catch (error: any) {
     return {
@@ -834,6 +1122,10 @@ async function extractInstagramWithApify(
     };
   }
 }
+
+/* =========================
+   YT-DLP
+========================= */
 
 async function runYtDlp(
   url: string,
@@ -859,7 +1151,8 @@ async function runYtDlp(
     args,
     {
       timeout: 120000,
-      maxBuffer: 10 * 1024 * 1024,
+      maxBuffer:
+        10 * 1024 * 1024,
     }
   );
 }
@@ -873,11 +1166,205 @@ function safeFilename(
         /[<>:"/\\|?*\x00-\x1F]/g,
         "_"
       )
-      .replace(/\s+/g, " ")
+      .replace(
+        /\s+/g,
+        " "
+      )
       .trim()
       .slice(0, 180) ||
     "download"
   );
+}
+
+/* =========================
+   DOWNLOAD INSTAGRAM MEDIA
+   CURL-CFFI / CHROME-LIKE
+========================= */
+
+async function downloadInstagramWithCurl(
+  url: string
+): Promise<{
+  buffer: Buffer;
+  contentType: string;
+}> {
+  const tempDir =
+    await fs.mkdtemp(
+      path.join(
+        os.tmpdir(),
+        "letsedrop-media-"
+      )
+    );
+
+  const outputFile =
+    path.join(
+      tempDir,
+      "media"
+    );
+
+  try {
+    const pythonScript = `
+import sys
+import json
+from curl_cffi import requests
+
+url = sys.argv[1]
+output = sys.argv[2]
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Accept": "*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.instagram.com/",
+    "Origin": "https://www.instagram.com",
+    "Connection": "keep-alive"
+}
+
+r = requests.get(
+    url,
+    headers=headers,
+    impersonate="chrome",
+    allow_redirects=True,
+    timeout=30
+)
+
+content_type = (
+    r.headers.get("content-type", "")
+    .split(";")[0]
+    .strip()
+    .lower()
+)
+
+data = r.content
+
+if not data:
+    raise Exception("Media Instagram kosong.")
+
+if content_type == "text/html" or data[:100].lower().find(b"<html") >= 0 or data[:100].lower().find(b"<!doctype") >= 0:
+    raise Exception(
+        "Instagram/CDN mengembalikan HTML, bukan file media."
+    )
+
+with open(output, "wb") as f:
+    f.write(data)
+
+print(json.dumps({
+    "contentType": content_type,
+    "status": r.status_code,
+    "finalUrl": r.url,
+    "size": len(data)
+}))
+`;
+
+    const result =
+      await execFileAsync(
+        "python3",
+        [
+          "-c",
+          pythonScript,
+          url,
+          outputFile,
+        ],
+        {
+          timeout: 45000,
+          maxBuffer:
+            2 * 1024 * 1024,
+        }
+      );
+
+    const meta =
+      JSON.parse(
+        result.stdout
+      );
+
+    const buffer =
+      await fs.readFile(
+        outputFile
+      );
+
+    if (!buffer.length) {
+      throw new Error(
+        "File media Instagram kosong."
+      );
+    }
+
+    let contentType =
+      String(
+        meta.contentType ||
+          ""
+      );
+
+    /*
+     * Kalau CDN tidak memberikan
+     * content-type yang benar,
+     * deteksi berdasarkan magic bytes.
+     */
+
+    if (
+      !contentType ||
+      contentType ===
+        "application/octet-stream"
+    ) {
+      if (
+        buffer.length >= 3 &&
+        buffer[0] === 0xff &&
+        buffer[1] === 0xd8 &&
+        buffer[2] === 0xff
+      ) {
+        contentType =
+          "image/jpeg";
+      } else if (
+        buffer.length >= 8 &&
+        buffer[0] === 0x89 &&
+        buffer[1] === 0x50 &&
+        buffer[2] === 0x4e &&
+        buffer[3] === 0x47
+      ) {
+        contentType =
+          "image/png";
+      } else if (
+        buffer.length >= 12 &&
+        buffer.toString(
+          "ascii",
+          0,
+          4
+        ) === "RIFF" &&
+        buffer.toString(
+          "ascii",
+          8,
+          12
+        ) === "WEBP"
+      ) {
+        contentType =
+          "image/webp";
+      } else if (
+        buffer.length >= 8 &&
+        buffer.toString(
+          "ascii",
+          4,
+          8
+        ) === "ftyp"
+      ) {
+        contentType =
+          "video/mp4";
+      } else {
+        contentType =
+          "application/octet-stream";
+      }
+    }
+
+    return {
+      buffer,
+      contentType,
+    };
+  } finally {
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true,
+      }
+    ).catch(() => {});
+  }
 }
 
 async function downloadRemoteInstagramMedia(
@@ -887,7 +1374,9 @@ async function downloadRemoteInstagramMedia(
   contentType: string;
 }> {
   const url =
-    normalizeMediaUrl(rawUrl);
+    normalizeMediaUrl(
+      rawUrl
+    );
 
   if (!url) {
     throw new Error(
@@ -895,16 +1384,52 @@ async function downloadRemoteInstagramMedia(
     );
   }
 
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131 Safari/537.36",
-      Referer:
-        "https://www.instagram.com/",
-    },
-    signal:
-      AbortSignal.timeout(30000),
-  });
+  /*
+   * Jalur utama:
+   * curl_cffi dengan impersonasi Chrome.
+   */
+  try {
+    return await downloadInstagramWithCurl(
+      url
+    );
+  } catch (curlError: any) {
+    console.error(
+      "Instagram curl download gagal:",
+      curlError?.message ||
+        curlError
+    );
+  }
+
+  /*
+   * Fallback:
+   * Node fetch.
+   */
+  const response =
+    await fetch(url, {
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+
+        Accept:
+          "*/*",
+
+        "Accept-Language":
+          "en-US,en;q=0.9",
+
+        Referer:
+          "https://www.instagram.com/",
+
+        Origin:
+          "https://www.instagram.com",
+      },
+
+      redirect: "follow",
+
+      signal:
+        AbortSignal.timeout(
+          30000
+        ),
+    });
 
   if (!response.ok) {
     throw new Error(
@@ -912,21 +1437,71 @@ async function downloadRemoteInstagramMedia(
     );
   }
 
+  const contentType =
+    response.headers.get(
+      "content-type"
+    ) || "";
+
+  if (
+    contentType
+      .toLowerCase()
+      .includes(
+        "text/html"
+      )
+  ) {
+    throw new Error(
+      "Instagram mengembalikan HTML, bukan file media."
+    );
+  }
+
   const arrayBuffer =
     await response.arrayBuffer();
 
   const buffer =
-    Buffer.from(arrayBuffer);
+    Buffer.from(
+      arrayBuffer
+    );
 
-  const contentType =
-    response.headers.get(
-      "content-type"
+  if (!buffer.length) {
+    throw new Error(
+      "File media Instagram kosong."
+    );
+  }
+
+  /*
+   * Perlindungan tambahan:
+   * jangan pernah kirim HTML
+   * sebagai JPG/MP4.
+   */
+  const beginning =
+    buffer
+      .subarray(
+        0,
+        100
+      )
+      .toString(
+        "utf8"
+      )
+      .toLowerCase();
+
+  if (
+    beginning.includes(
+      "<html"
     ) ||
-    "application/octet-stream";
+    beginning.includes(
+      "<!doctype"
+    )
+  ) {
+    throw new Error(
+      "Respons Instagram adalah HTML, bukan file media."
+    );
+  }
 
   return {
     buffer,
-    contentType,
+    contentType:
+      contentType ||
+      "application/octet-stream",
   };
 }
 
@@ -970,7 +1545,11 @@ app.get(
       });
     }
 
-    if (!isInstagramUrl(rawUrl)) {
+    if (
+      !isInstagramUrl(
+        rawUrl
+      )
+    ) {
       return res.status(400).json({
         success: false,
         message:
@@ -983,7 +1562,9 @@ app.get(
         rawUrl
       );
 
-    return res.json(result);
+    return res.json(
+      result
+    );
   }
 );
 
@@ -1032,25 +1613,37 @@ app.get(
 
       return res.json({
         success: true,
+
         id:
           data.id || "",
+
         title:
           data.title || "",
+
         webpage_url:
           data.webpage_url ||
           rawUrl,
+
         extractor:
           data.extractor ||
           "",
+
         ext:
           data.ext || "",
+
         thumbnail:
-          data.thumbnail || "",
+          data.thumbnail ||
+          "",
+
         duration:
           data.duration ||
           null,
+
         has_url:
-          Boolean(data.url),
+          Boolean(
+            data.url
+          ),
+
         formats_count:
           Array.isArray(
             data.formats
@@ -1087,11 +1680,23 @@ app.post(
       const rawUrl =
         parsed.url.trim();
 
-      if (isInstagramUrl(rawUrl)) {
+      /*
+       * =====================
+       * INSTAGRAM
+       * =====================
+       */
+
+      if (
+        isInstagramUrl(
+          rawUrl
+        )
+      ) {
         /*
-         * Pertama tetap coba jalur
-         * Playwright yang sudah bekerja
-         * untuk video Instagram.
+         * Pertama tetap coba
+         * Playwright.
+         *
+         * Ini mempertahankan
+         * behavior video lama.
          */
         const instagram =
           await extractInstagramWithPlaywright(
@@ -1100,12 +1705,13 @@ app.post(
 
         /*
          * Single video:
-         * pertahankan behavior lama.
+         * behavior lama.
          */
         if (
           instagram.success &&
           instagram.isVideoPost &&
-          instagram.items.length === 1
+          instagram.items.length ===
+            1
         ) {
           return res.json({
             success: true,
@@ -1128,31 +1734,63 @@ app.post(
          * Foto / carousel:
          * gunakan Apify.
          */
-        console.log("APIFY START", rawUrl);
-        
+
+        console.log(
+          "APIFY START",
+          rawUrl
+        );
+
         const apify =
           await extractInstagramWithApify(
             rawUrl
           );
 
-                if (
-  apify.success &&
-  Array.isArray(apify.items) &&
-  apify.items.length > 0
-) {
+        console.log(
+          "APIFY RESULT",
+          {
+            success:
+              apify.success,
+
+            itemCount:
+              "itemCount" in
+              apify
+                ? apify.itemCount
+                : 0,
+
+            error:
+              "error" in apify
+                ? apify.error
+                : undefined,
+          }
+        );
+
+        if (
+          apify.success &&
+          Array.isArray(
+            apify.items
+          ) &&
+          apify.items.length >
+            0
+        ) {
           return res.json({
             success: true,
+
             type: "image",
+
             url:
               apify.url,
+
             title:
               apify.title ||
               "Instagram Post",
+
             thumbnail:
               apify.thumbnail ||
               "",
+
             itemCount:
               apify.itemCount,
+
             items:
               apify.items,
           });
@@ -1161,25 +1799,33 @@ app.post(
         /*
          * Kalau Apify gagal,
          * gunakan hasil Playwright
-         * kalau ternyata tersedia.
+         * jika tersedia.
          */
+
         if (
           instagram.success &&
-          instagram.items.length > 0
+          instagram.items.length >
+            0
         ) {
           return res.json({
             success: true,
+
             type: "image",
+
             url:
               instagram.url,
+
             title:
               instagram.title ||
               "Instagram Post",
+
             thumbnail:
               instagram.thumbnail ||
               "",
+
             itemCount:
               instagram.items.length,
+
             items:
               instagram.items,
           });
@@ -1187,8 +1833,9 @@ app.post(
 
         /*
          * Fallback terakhir:
-         * coba yt-dlp.
+         * yt-dlp.
          */
+
         try {
           const tempDir =
             await fs.mkdtemp(
@@ -1211,7 +1858,9 @@ app.post(
                 {
                   timeout: 60000,
                   maxBuffer:
-                    10 * 1024 * 1024,
+                    10 *
+                    1024 *
+                    1024,
                 }
               );
 
@@ -1220,33 +1869,43 @@ app.post(
                 info.stdout
               );
 
+            const isImage =
+              data.ext ===
+                "jpg" ||
+              data.ext ===
+                "jpeg" ||
+              data.ext ===
+                "png";
+
             return res.json({
               success: true,
-              type:
-                data.ext === "jpg" ||
-                data.ext === "jpeg" ||
-                data.ext === "png"
-                  ? "image"
-                  : "video",
+
+              type: isImage
+                ? "image"
+                : "video",
+
               url: rawUrl,
+
               title:
                 data.title ||
                 "Instagram",
+
               thumbnail:
                 data.thumbnail ||
                 "",
+
               itemCount: 1,
+
               items: [
                 {
-                  type:
-                    data.ext === "jpg" ||
-                    data.ext === "jpeg" ||
-                    data.ext === "png"
-                      ? "image"
-                      : "video",
+                  type: isImage
+                    ? "image"
+                    : "video",
+
                   url:
                     data.url ||
                     rawUrl,
+
                   thumbnail:
                     data.thumbnail ||
                     undefined,
@@ -1266,6 +1925,7 @@ app.post(
 
         return res.status(422).json({
           success: false,
+
           message:
             apify.error ||
             instagram.error ||
@@ -1274,10 +1934,11 @@ app.post(
       }
 
       /*
-       * Non-Instagram:
-       * gunakan yt-dlp untuk URL publik
-       * yang didukung.
+       * =====================
+       * NON-INSTAGRAM
+       * =====================
        */
+
       try {
         const info =
           await execFileAsync(
@@ -1291,7 +1952,9 @@ app.post(
             {
               timeout: 60000,
               maxBuffer:
-                10 * 1024 * 1024,
+                10 *
+                1024 *
+                1024,
             }
           );
 
@@ -1302,21 +1965,29 @@ app.post(
 
         return res.json({
           success: true,
+
           type: "video",
+
           url: rawUrl,
+
           title:
             data.title ||
             "Video",
+
           thumbnail:
             data.thumbnail ||
             "",
+
           itemCount: 1,
+
           items: [
             {
               type: "video",
+
               url:
                 data.webpage_url ||
                 rawUrl,
+
               thumbnail:
                 data.thumbnail ||
                 undefined,
@@ -1326,6 +1997,7 @@ app.post(
       } catch (error: any) {
         return res.status(422).json({
           success: false,
+
           message:
             error?.stderr ||
             error?.message ||
@@ -1346,6 +2018,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           error?.message ||
           "Gagal memproses URL.",
@@ -1362,7 +2035,8 @@ app.post(
   "/api/download",
   async (req, res) => {
     let tempDir:
-      string | null = null;
+      | string
+      | null = null;
 
     try {
       const parsed =
@@ -1391,11 +2065,17 @@ app.post(
       const mediaFiles =
         files.filter(
           (file) =>
-            !file.endsWith(".part") &&
-            !file.endsWith(".ytdl")
+            !file.endsWith(
+              ".part"
+            ) &&
+            !file.endsWith(
+              ".ytdl"
+            )
         );
 
-      if (!mediaFiles.length) {
+      if (
+        !mediaFiles.length
+      ) {
         throw new Error(
           "File hasil download tidak ditemukan."
         );
@@ -1456,6 +2136,7 @@ app.post(
 
       return res.status(500).json({
         success: false,
+
         message:
           error?.stderr ||
           error?.message ||
@@ -1473,34 +2154,85 @@ app.post(
   "/api/download-carousel",
   async (req, res) => {
     try {
-      const body = z
-        .object({
-          url: z.string().url(),
-          type: z.enum([
-            "image",
-            "video",
-          ]),
-        })
-        .parse(req.body);
+      const body =
+        z
+          .object({
+            url:
+              z.string().url(),
+
+            type:
+              z.enum([
+                "image",
+                "video",
+              ]),
+          })
+          .parse(req.body);
 
       const result =
         await downloadRemoteInstagramMedia(
           body.url
         );
 
-      const extension =
-        body.type === "video"
-          ? "mp4"
-          : result.contentType.includes(
-              "png"
-            )
-          ? "png"
-          : "jpg";
+      const contentType =
+        result.contentType.toLowerCase();
+
+      let extension =
+        "bin";
+
+      if (
+        body.type ===
+        "video"
+      ) {
+        extension =
+          contentType.includes(
+            "webm"
+          )
+            ? "webm"
+            : "mp4";
+      } else if (
+        contentType.includes(
+          "png"
+        )
+      ) {
+        extension =
+          "png";
+      } else if (
+        contentType.includes(
+          "webp"
+        )
+      ) {
+        extension =
+          "webp";
+      } else if (
+        contentType.includes(
+          "jpeg"
+        ) ||
+        contentType.includes(
+          "jpg"
+        ) ||
+        contentType.startsWith(
+          "image/"
+        )
+      ) {
+        extension =
+          "jpg";
+      }
+
+      if (
+        extension ===
+        "bin"
+      ) {
+        throw new Error(
+          "Format media Instagram tidak dikenali."
+        );
+      }
 
       const filename =
         `letsedrop-${crypto
           .randomBytes(4)
-          .toString("hex")}.${extension}`;
+          .toString(
+            "hex"
+          )}.${extension}`;
 
       res.setHeader(
         "Content-Type",
@@ -1508,14 +2240,28 @@ app.post(
       );
 
       res.setHeader(
+        "Content-Length",
+        result.buffer.length
+      );
+
+      res.setHeader(
         "Content-Disposition",
         `attachment; filename="${filename}"`
       );
 
-      res.send(result.buffer);
+      res.send(
+        result.buffer
+      );
     } catch (error: any) {
+      console.error(
+        "DOWNLOAD CAROUSEL ERROR:",
+        error?.message ||
+          error
+      );
+
       return res.status(500).json({
         success: false,
+
         message:
           error?.message ||
           "Gagal mendownload media Instagram.",
@@ -1532,32 +2278,71 @@ app.post(
   "/api/download-image",
   async (req, res) => {
     try {
-      const body = z
-        .object({
-          url: z.string().url(),
-        })
-        .parse(req.body);
+      const body =
+        z
+          .object({
+            url:
+              z.string().url(),
+          })
+          .parse(req.body);
 
       const result =
         await downloadRemoteInstagramMedia(
           body.url
         );
 
-      const extension =
-        result.contentType.includes(
+      const contentType =
+        result.contentType.toLowerCase();
+
+      let extension =
+        "jpg";
+
+      if (
+        contentType.includes(
           "png"
         )
-          ? "png"
-          : result.contentType.includes(
-              "webp"
-            )
-          ? "webp"
-          : "jpg";
+      ) {
+        extension =
+          "png";
+      } else if (
+        contentType.includes(
+          "webp"
+        )
+      ) {
+        extension =
+          "webp";
+      } else if (
+        contentType.includes(
+          "jpeg"
+        ) ||
+        contentType.includes(
+          "jpg"
+        )
+      ) {
+        extension =
+          "jpg";
+      }
+
+      /*
+       * Pastikan endpoint image
+       * benar-benar mendapatkan image.
+       */
+      if (
+        !contentType.startsWith(
+          "image/"
+        )
+      ) {
+        throw new Error(
+          `Respons bukan gambar (${result.contentType}).`
+        );
+      }
 
       const filename =
         `letsedrop-${crypto
           .randomBytes(4)
-          .toString("hex")}.${extension}`;
+          .toString(
+            "hex"
+          )}.${extension}`;
 
       res.setHeader(
         "Content-Type",
@@ -1565,14 +2350,28 @@ app.post(
       );
 
       res.setHeader(
+        "Content-Length",
+        result.buffer.length
+      );
+
+      res.setHeader(
         "Content-Disposition",
         `attachment; filename="${filename}"`
       );
 
-      res.send(result.buffer);
+      res.send(
+        result.buffer
+      );
     } catch (error: any) {
+      console.error(
+        "DOWNLOAD IMAGE ERROR:",
+        error?.message ||
+          error
+      );
+
       return res.status(500).json({
         success: false,
+
         message:
           error?.message ||
           "Gagal mendownload gambar.",

@@ -13,7 +13,7 @@ import fs from 'fs';
 import dns from 'dns/promises';
 import { URL } from 'url';
 import crypto from 'crypto';
-import { chromium, Browser } from 'playwright';
+import { chromium, Browser, Route } from 'playwright';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -232,7 +232,8 @@ async function extractInstagramWithPlaywright(targetUrl: string): Promise<{
 
     const page = await context.newPage();
 
-    await page.route('**/*', (route) => {
+    // Type parameter 'route' secara eksplisit sebagai Route untuk menghindari TS7006
+    await page.route('**/*', (route: Route) => {
       const reqUrl = route.request().url().toLowerCase();
       if (
         reqUrl.includes('google-analytics') ||
@@ -819,7 +820,8 @@ app.post('/api/download-image', async (req: Request, res: Response): Promise<voi
 
     const imgResponse = await fetch(targetImageUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
         'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
       },
       signal: controller.signal,

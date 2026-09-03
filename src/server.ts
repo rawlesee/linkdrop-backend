@@ -13,7 +13,7 @@ import fs from 'fs';
 import dns from 'dns/promises';
 import { URL } from 'url';
 import crypto from 'crypto';
-import { chromium, Browser, Route } from 'playwright';
+import { chromium, Browser, Route } from 'playwright-core';
 
 const app = express();
 const PORT = process.env.PORT || 3000;

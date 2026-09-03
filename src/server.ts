@@ -1373,10 +1373,7 @@ async function downloadRemoteInstagramMedia(
   buffer: Buffer;
   contentType: string;
 }> {
-  const url =
-    normalizeMediaUrl(
-      rawUrl
-    );
+  const url = normalizeMediaUrl(rawUrl);
 
   if (!url) {
     throw new Error(
@@ -1385,126 +1382,340 @@ async function downloadRemoteInstagramMedia(
   }
 
   /*
-   * Jalur utama:
-   * curl_cffi dengan impersonasi Chrome.
+   * =====================================================
+   * METHOD 1
+   * curl_cffi + Chrome impersonation
+   * =====================================================
    */
-  try {
-    return await downloadInstagramWithCurl(
-      url
-    );
-  } catch (curlError: any) {
-    console.error(
-      "Instagram curl download gagal:",
-      curlError?.message ||
-        curlError
-    );
-  }
 
-  /*
-   * Fallback:
-   * Node fetch.
-   */
-  const response =
-    await fetch(url, {
-      headers: {
-        "User-Agent":
-          "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
-
-        Accept:
-          "*/*",
-
-        "Accept-Language":
-          "en-US,en;q=0.9",
-
-        Referer:
-          "https://www.instagram.com/",
-
-        Origin:
-          "https://www.instagram.com",
-      },
-
-      redirect: "follow",
-
-      signal:
-        AbortSignal.timeout(
-          30000
-        ),
-    });
-
-  if (!response.ok) {
-    throw new Error(
-      `Gagal mengambil media Instagram (${response.status}).`
-    );
-  }
-
-  const contentType =
-    response.headers.get(
-      "content-type"
-    ) || "";
-
-  if (
-    contentType
-      .toLowerCase()
-      .includes(
-        "text/html"
-      )
-  ) {
-    throw new Error(
-      "Instagram mengembalikan HTML, bukan file media."
-    );
-  }
-
-  const arrayBuffer =
-    await response.arrayBuffer();
-
-  const buffer =
-    Buffer.from(
-      arrayBuffer
-    );
-
-  if (!buffer.length) {
-    throw new Error(
-      "File media Instagram kosong."
-    );
-  }
-
-  /*
-   * Perlindungan tambahan:
-   * jangan pernah kirim HTML
-   * sebagai JPG/MP4.
-   */
-  const beginning =
-    buffer
-      .subarray(
-        0,
-        100
-      )
-      .toString(
-        "utf8"
-      )
-      .toLowerCase();
-
-  if (
-    beginning.includes(
-      "<html"
-    ) ||
-    beginning.includes(
-      "<!doctype"
+  const tempDir = await fs.mkdtemp(
+    path.join(
+      os.tmpdir(),
+      "letsedrop-instagram-"
     )
-  ) {
-    throw new Error(
-      "Respons Instagram adalah HTML, bukan file media."
-    );
-  }
+  );
 
-  return {
-    buffer,
-    contentType:
-      contentType ||
-      "application/octet-stream",
-  };
+  const outputFile = path.join(
+    tempDir,
+    "media"
+  );
+
+  try {
+    const pythonScript = `
+import sys
+import json
+from curl_cffi import requests
+
+url = sys.argv[1]
+output = sys.argv[2]
+
+headers = {
+    "User-Agent": "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.instagram.com/",
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "cross-site",
+    "Connection": "keep-alive"
 }
 
+r = requests.get(
+    url,
+    headers=headers,
+    impersonate="chrome",
+    allow_redirects=True,
+    timeout=30
+)
+
+content_type = (
+    r.headers.get(
+        "content-type",
+        ""
+    )
+    .split(";")[0]
+    .strip()
+    .lower()
+)
+
+data = r.content
+
+if r.status_code < 200 or r.status_code >= 300:
+    raise Exception(
+        "CDN Instagram HTTP " +
+        str(r.status_code)
+    )
+
+if not data:
+    raise Exception(
+        "Media Instagram kosong."
+    )
+
+first = data[:200].lower()
+
+if (
+    b"<html" in first
+    or b"<!doctype" in first
+    or content_type == "text/html"
+):
+    raise Exception(
+        "Instagram CDN mengembalikan HTML."
+    )
+
+with open(output, "wb") as f:
+    f.write(data)
+
+print(json.dumps({
+    "contentType": content_type,
+    "status": r.status_code,
+    "finalUrl": r.url,
+    "size": len(data)
+}))
+`;
+
+    try {
+      const result =
+        await execFileAsync(
+          "python3",
+          [
+            "-c",
+            pythonScript,
+            url,
+            outputFile,
+          ],
+          {
+            timeout: 45000,
+            maxBuffer:
+              2 * 1024 * 1024,
+          }
+        );
+
+      const meta =
+        JSON.parse(
+          result.stdout
+        );
+
+      const buffer =
+        await fs.readFile(
+          outputFile
+        );
+
+      if (!buffer.length) {
+        throw new Error(
+          "File media Instagram kosong."
+        );
+      }
+
+      let contentType =
+        String(
+          meta.contentType || ""
+        ).toLowerCase();
+
+      /*
+       * Deteksi berdasarkan file signature
+       * kalau CDN tidak memberikan MIME type.
+       */
+
+      if (
+        !contentType ||
+        contentType ===
+          "application/octet-stream"
+      ) {
+        if (
+          buffer.length >= 3 &&
+          buffer[0] === 0xff &&
+          buffer[1] === 0xd8 &&
+          buffer[2] === 0xff
+        ) {
+          contentType =
+            "image/jpeg";
+        } else if (
+          buffer.length >= 8 &&
+          buffer[0] === 0x89 &&
+          buffer[1] === 0x50 &&
+          buffer[2] === 0x4e &&
+          buffer[3] === 0x47
+        ) {
+          contentType =
+            "image/png";
+        } else if (
+          buffer.length >= 12 &&
+          buffer.toString(
+            "ascii",
+            0,
+            4
+          ) === "RIFF" &&
+          buffer.toString(
+            "ascii",
+            8,
+            12
+          ) === "WEBP"
+        ) {
+          contentType =
+            "image/webp";
+        } else if (
+          buffer.length >= 8 &&
+          buffer.toString(
+            "ascii",
+            4,
+            8
+          ) === "ftyp"
+        ) {
+          contentType =
+            "video/mp4";
+        }
+      }
+
+      if (
+        !contentType ||
+        contentType ===
+          "application/octet-stream"
+      ) {
+        throw new Error(
+          "Format media Instagram tidak dikenali."
+        );
+      }
+
+      return {
+        buffer,
+        contentType,
+      };
+    } catch (curlError: any) {
+      console.error(
+        "Instagram curl download gagal:",
+        curlError?.stderr ||
+          curlError?.message ||
+          curlError
+      );
+    }
+
+    /*
+     * =====================================================
+     * METHOD 2
+     * Native Node fetch
+     * =====================================================
+     */
+
+    const response =
+      await fetch(url, {
+        method: "GET",
+
+        headers: {
+          "User-Agent":
+            "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36",
+
+          Accept:
+            "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+
+          "Accept-Language":
+            "en-US,en;q=0.9",
+
+          Referer:
+            "https://www.instagram.com/",
+
+          "Sec-Fetch-Dest":
+            "image",
+
+          "Sec-Fetch-Mode":
+            "no-cors",
+
+          "Sec-Fetch-Site":
+            "cross-site",
+        },
+
+        redirect: "follow",
+
+        signal:
+          AbortSignal.timeout(
+            30000
+          ),
+      });
+
+    if (!response.ok) {
+      throw new Error(
+        `Gagal mengambil media Instagram (${response.status}).`
+      );
+    }
+
+    const contentType =
+      (
+        response.headers.get(
+          "content-type"
+        ) || ""
+      )
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+
+    if (
+      contentType.includes(
+        "text/html"
+      )
+    ) {
+      throw new Error(
+        "Instagram mengembalikan HTML, bukan media."
+      );
+    }
+
+    const arrayBuffer =
+      await response.arrayBuffer();
+
+    const buffer =
+      Buffer.from(
+        arrayBuffer
+      );
+
+    if (!buffer.length) {
+      throw new Error(
+        "File media Instagram kosong."
+      );
+    }
+
+    /*
+     * Jangan pernah mengirim HTML
+     * sebagai gambar.
+     */
+
+    const beginning =
+      buffer
+        .subarray(
+          0,
+          200
+        )
+        .toString(
+          "utf8"
+        )
+        .toLowerCase();
+
+    if (
+      beginning.includes(
+        "<html"
+      ) ||
+      beginning.includes(
+        "<!doctype"
+      )
+    ) {
+      throw new Error(
+        "Respons Instagram adalah HTML, bukan media."
+      );
+    }
+
+    return {
+      buffer,
+      contentType:
+        contentType ||
+        "application/octet-stream",
+    };
+  } finally {
+    await fs.rm(
+      tempDir,
+      {
+        recursive: true,
+        force: true,
+      }
+    ).catch(() => {});
+  }
+}
 /* =========================
    HEALTH
 ========================= */

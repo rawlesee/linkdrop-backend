@@ -134,20 +134,15 @@ async function validateUrlSafety(
     ) {
       return {
         safe: false,
-        error:
-          'Protokol URL harus HTTP atau HTTPS.',
+        error: 'Protokol URL harus HTTP atau HTTPS.',
       };
     }
 
-    const hostname =
-      parsed.hostname.toLowerCase();
+    const hostname = parsed.hostname.toLowerCase();
 
     let matchedPlatform: string | undefined;
 
-    for (const [
-      platform,
-      regex,
-    ] of Object.entries(
+    for (const [platform, regex] of Object.entries(
       SUPPORTED_DOMAINS
     )) {
       if (regex.test(hostname)) {
@@ -159,17 +154,13 @@ async function validateUrlSafety(
     if (!matchedPlatform) {
       return {
         safe: false,
-        error:
-          'Platform ini belum didukung.',
+        error: 'Platform ini belum didukung.',
       };
     }
 
-    const addresses = await dns.lookup(
-      hostname,
-      {
-        all: true,
-      }
-    );
+    const addresses = await dns.lookup(hostname, {
+      all: true,
+    });
 
     for (const addr of addresses) {
       const ip = addr.address;
@@ -179,9 +170,7 @@ async function validateUrlSafety(
         ip.startsWith('10.') ||
         ip.startsWith('192.168.') ||
         ip.startsWith('169.254.') ||
-        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(
-          ip
-        ) ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
         ip === '::1' ||
         ip.startsWith('fe80:') ||
         ip.startsWith('fc00:') ||
@@ -208,7 +197,7 @@ async function validateUrlSafety(
 }
 
 /* =========================================================
-   COMMAND
+   COMMAND EXECUTION
    ========================================================= */
 
 interface CommandResult {
@@ -232,9 +221,7 @@ class CommandExecutionError extends Error {
   ) {
     super(message);
 
-    this.name =
-      'CommandExecutionError';
-
+    this.name = 'CommandExecutionError';
     this.code = code;
     this.stdout = stdout;
     this.stderr = stderr;
@@ -247,119 +234,101 @@ function runCommand(
   args: string[],
   timeoutMs = 30000
 ): Promise<CommandResult> {
-  return new Promise(
-    (resolve, reject) => {
-      console.log(
-        `[EXEC] ${command} ${args.join(' ')}`
+  return new Promise((resolve, reject) => {
+    console.log(
+      `[EXEC] ${command} ${args.join(' ')}`
+    );
+
+    const child = spawn(command, args, {
+      shell: false,
+      windowsHide: true,
+    });
+
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+
+      settled = true;
+
+      child.kill('SIGKILL');
+
+      reject(
+        new CommandExecutionError(
+          'TIMEOUT',
+          -1,
+          stdout,
+          stderr,
+          true
+        )
       );
+    }, timeoutMs);
 
-      const child = spawn(
-        command,
-        args,
-        {
-          shell: false,
-          windowsHide: true,
-        }
+    child.stdout?.on(
+      'data',
+      (chunk: Buffer | string) => {
+        stdout += chunk.toString();
+      }
+    );
+
+    child.stderr?.on(
+      'data',
+      (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      }
+    );
+
+    child.on('error', (err: Error) => {
+      if (settled) return;
+
+      clearTimeout(timer);
+      settled = true;
+
+      reject(
+        new CommandExecutionError(
+          err.message,
+          -1,
+          stdout,
+          stderr,
+          false
+        )
       );
+    });
 
-      let stdout = '';
-      let stderr = '';
-      let settled = false;
+    child.on('close', (code) => {
+      if (settled) return;
 
-      const timer = setTimeout(
-        () => {
-          if (settled) return;
+      clearTimeout(timer);
+      settled = true;
 
-          settled = true;
+      const exitCode = code ?? 1;
 
-          child.kill(
-            'SIGKILL'
-          );
-
-          reject(
-            new CommandExecutionError(
-              'TIMEOUT',
-              -1,
-              stdout,
-              stderr,
-              true
-            )
-          );
-        },
-        timeoutMs
-      );
-
-      child.stdout?.on(
-        'data',
-        (chunk: Buffer | string) => {
-          stdout += chunk.toString();
-        }
-      );
-
-      child.stderr?.on(
-        'data',
-        (chunk: Buffer | string) => {
-          stderr += chunk.toString();
-        }
-      );
-
-      child.on(
-        'error',
-        (err: Error) => {
-          if (settled) return;
-
-          clearTimeout(timer);
-          settled = true;
-
-          reject(
-            new CommandExecutionError(
-              err.message,
-              -1,
-              stdout,
-              stderr,
-              false
-            )
-          );
-        }
-      );
-
-      child.on(
-        'close',
-        (code) => {
-          if (settled) return;
-
-          clearTimeout(timer);
-          settled = true;
-
-          const exitCode =
-            code ?? 1;
-
-          if (exitCode === 0) {
-            resolve({
-              stdout,
-              stderr,
-              code: exitCode,
-            });
-          } else {
-            reject(
-              new CommandExecutionError(
-                stderr.trim() ||
-                  `Command failed with exit code ${exitCode}`,
-                exitCode,
-                stdout,
-                stderr,
-                false
-              )
-            );
-          }
-        }
-      );
-    }
-  );
+      if (exitCode === 0) {
+        resolve({
+          stdout,
+          stderr,
+          code: exitCode,
+        });
+      } else {
+        reject(
+          new CommandExecutionError(
+            stderr.trim() ||
+              `Command failed with exit code ${exitCode}`,
+            exitCode,
+            stdout,
+            stderr,
+            false
+          )
+        );
+      }
+    });
+  });
 }
 
 /* =========================================================
-   HTML FETCH
+   FETCH INSTAGRAM HTML
    ========================================================= */
 
 async function fetchInstagramHtml(
@@ -370,148 +339,106 @@ async function fetchInstagramHtml(
   contentType: string;
   html: string;
 }> {
-  const controller =
-    new AbortController();
+  const controller = new AbortController();
 
-  const timeout =
-    setTimeout(
-      () =>
-        controller.abort(),
-      20000
-    );
+  const timeout = setTimeout(
+    () => controller.abort(),
+    20000
+  );
 
   try {
-    const response =
-      await fetch(
-        targetUrl,
-        {
-          method: 'GET',
-          redirect: 'follow',
+    const response = await fetch(targetUrl, {
+      method: 'GET',
+      redirect: 'follow',
 
-          headers: {
-            'User-Agent':
-              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      headers: {
+        'User-Agent':
+          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
 
-            Accept:
-              'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        Accept:
+          'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
 
-            'Accept-Language':
-              'en-US,en;q=0.9',
+        'Accept-Language':
+          'en-US,en;q=0.9',
 
-            'Cache-Control':
-              'no-cache',
+        'Cache-Control': 'no-cache',
 
-            Pragma:
-              'no-cache',
-          },
+        Pragma: 'no-cache',
+      },
 
-          signal:
-            controller.signal,
-        }
-      );
+      signal: controller.signal,
+    });
 
-    const html =
-      await response.text();
+    const html = await response.text();
 
     return {
-      status:
-        response.status,
-
-      finalUrl:
-        response.url,
-
+      status: response.status,
+      finalUrl: response.url,
       contentType:
-        response.headers.get(
-          'content-type'
-        ) || '',
-
+        response.headers.get('content-type') || '',
       html,
     };
   } finally {
-    clearTimeout(
-      timeout
-    );
+    clearTimeout(timeout);
   }
 }
 
 /* =========================================================
-   HTML META
+   HTML ENTITY DECODER
    ========================================================= */
 
 function decodeHtmlEntities(
   value: string
 ): string {
   return value
-    .replace(
-      /&amp;/gi,
-      '&'
-    )
-    .replace(
-      /&quot;/gi,
-      '"'
-    )
-    .replace(
-      /&#39;/gi,
-      "'"
-    )
-    .replace(
-      /&#x27;/gi,
-      "'"
-    )
-    .replace(
-      /&lt;/gi,
-      '<'
-    )
-    .replace(
-      /&gt;/gi,
-      '>'
-    );
+    .replace(/&amp;/gi, '&')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x27;/gi, "'")
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>');
 }
+
+/* =========================================================
+   META TAG PARSER
+   ========================================================= */
 
 function getMetaContent(
   html: string,
   property: string
 ): string {
-  const escaped =
-    property.replace(
-      /[-/\\^$*+?.()|[\]{}]/g,
-      '\\$&'
+  const metaTags =
+    html.match(/<meta\b[^>]*>/gi) || [];
+
+  for (const tag of metaTags) {
+    const propertyMatch = tag.match(
+      /\bproperty\s*=\s*["']([^"']+)["']/i
     );
 
-  const patterns = [
-    new RegExp(
-      `<meta[^>]+property=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`,
-      'i'
-    ),
+    const nameMatch = tag.match(
+      /\bname\s*=\s*["']([^"']+)["']/i
+    );
 
-    new RegExp(
-      `<meta[^>]+content=["']([^"']+)["'][^>]+property=["']${escaped}["'][^>]*>`,
-      'i'
-    ),
+    const contentMatch = tag.match(
+      /\bcontent\s*=\s*["']([^"']*)["']/i
+    );
 
-    new RegExp(
-      `<meta[^>]+name=["']${escaped}["'][^>]+content=["']([^"']+)["'][^>]*>`,
-      'i'
-    ),
+    if (!contentMatch) {
+      continue;
+    }
 
-    new RegExp(
-      `<meta[^>]+content=["']([^"']+)["'][^>]+name=["']${escaped}["'][^>]*>`,
-      'i'
-    ),
-  ];
+    const propertyValue =
+      propertyMatch?.[1]?.toLowerCase();
 
-  for (
-    const pattern of patterns
-  ) {
-    const match =
-      html.match(pattern);
+    const nameValue =
+      nameMatch?.[1]?.toLowerCase();
 
     if (
-      match &&
-      match[1]
+      propertyValue === property.toLowerCase() ||
+      nameValue === property.toLowerCase()
     ) {
       return decodeHtmlEntities(
-        match[1]
+        contentMatch[1]
       );
     }
   }
@@ -526,44 +453,26 @@ function getMetaContent(
 function extractPossibleImageUrls(
   html: string
 ): string[] {
-  const found =
-    new Set<string>();
+  const found = new Set<string>();
 
   /*
-   * Absolute URLs inside HTML.
+   * Normal absolute URLs.
    */
 
   const absoluteUrlRegex =
     /https?:\/\/[^"'<>\\\s]+/gi;
 
   const matches =
-    html.match(
-      absoluteUrlRegex
-    ) || [];
+    html.match(absoluteUrlRegex) || [];
 
-  for (
-    let value of matches
-  ) {
-    value =
-      value
-        .replace(
-          /\\u0026/g,
-          '&'
-        )
-        .replace(
-          /\\u003D/g,
-          '='
-        )
-        .replace(
-          /\\\//g,
-          '/'
-        );
+  for (let value of matches) {
+    value = value
+      .replace(/\\u0026/g, '&')
+      .replace(/\\u003D/g, '=')
+      .replace(/\\\//g, '/');
 
     try {
-      const parsed =
-        new URL(
-          value
-        );
+      const parsed = new URL(value);
 
       if (
         isAllowedInstagramImageHost(
@@ -574,29 +483,19 @@ function extractPossibleImageUrls(
           parsed.pathname.toLowerCase();
 
         if (
-          lower.includes(
-            '.jpg'
-          ) ||
-          lower.includes(
-            '.jpeg'
-          ) ||
-          lower.includes(
-            '.png'
-          ) ||
-          lower.includes(
-            '.webp'
-          ) ||
+          lower.includes('.jpg') ||
+          lower.includes('.jpeg') ||
+          lower.includes('.png') ||
+          lower.includes('.webp') ||
           parsed.hostname.includes(
             'cdninstagram'
           )
         ) {
-          found.add(
-            parsed.toString()
-          );
+          found.add(parsed.toString());
         }
       }
     } catch {
-      // ignore
+      // ignore invalid URLs
     }
   }
 
@@ -608,51 +507,495 @@ function extractPossibleImageUrls(
     /https?:\\\/\\\/[^"'<>\\\s]+/gi;
 
   const escapedMatches =
-    html.match(
-      escapedRegex
-    ) || [];
+    html.match(escapedRegex) || [];
 
-  for (
-    let value of escapedMatches
-  ) {
-    value =
-      value
-        .replace(
-          /\\\//g,
-          '/'
-        )
-        .replace(
-          /\\u0026/g,
-          '&'
-        )
-        .replace(
-          /\\u003D/g,
-          '='
-        );
+  for (let value of escapedMatches) {
+    value = value
+      .replace(/\\\//g, '/')
+      .replace(/\\u0026/g, '&')
+      .replace(/\\u003D/g, '=');
 
     try {
-      const parsed =
-        new URL(
-          value
-        );
+      const parsed = new URL(value);
 
       if (
         isAllowedInstagramImageHost(
           parsed.hostname
         )
       ) {
-        found.add(
-          parsed.toString()
+        found.add(parsed.toString());
+      }
+    } catch {
+      // ignore invalid URLs
+    }
+  }
+
+  return Array.from(found).slice(0, 20);
+}
+
+/* =========================================================
+   INSTAGRAM HTML EXTRACTION
+   ========================================================= */
+
+async function extractInstagramFromHtml(
+  targetUrl: string
+): Promise<{
+  type: 'image' | 'video' | 'unknown';
+  title: string;
+  imageUrl?: string;
+  thumbnail?: string;
+  ext?: string;
+}> {
+  const result =
+    await fetchInstagramHtml(
+      targetUrl
+    );
+
+  const html =
+    result.html;
+
+  if (
+    result.status < 200 ||
+    result.status >= 300
+  ) {
+    return {
+      type: 'unknown',
+      title: '',
+    };
+  }
+
+  if (
+    result.finalUrl.includes(
+      '/accounts/login'
+    )
+  ) {
+    return {
+      type: 'unknown',
+      title: '',
+    };
+  }
+
+  const ogImage =
+    getMetaContent(
+      html,
+      'og:image'
+    );
+
+  const ogTitle =
+    getMetaContent(
+      html,
+      'og:title'
+    );
+
+  const ogVideo =
+    getMetaContent(
+      html,
+      'og:video'
+    );
+
+  /*
+   * Detect video.
+   */
+
+  const hasVideo =
+    Boolean(ogVideo) ||
+    /"is_video"\s*:\s*true/i.test(
+      html
+    ) ||
+    /"video_versions"/i.test(
+      html
+    ) ||
+    /"video_url"/i.test(
+      html
+    );
+
+  if (hasVideo) {
+    return {
+      type: 'video',
+      title:
+        ogTitle ||
+        'Instagram Video',
+      thumbnail:
+        ogImage || '',
+    };
+  }
+
+  /*
+   * Try og:image.
+   */
+
+  if (ogImage) {
+    try {
+      const parsed =
+        new URL(ogImage);
+
+      if (
+        isAllowedInstagramImageHost(
+          parsed.hostname
+        )
+      ) {
+        return {
+          type: 'image',
+
+          title:
+            ogTitle ||
+            'Instagram Photo',
+
+          thumbnail:
+            ogImage,
+
+          imageUrl:
+            ogImage,
+
+          ext: 'jpg',
+        };
+      }
+    } catch {
+      // continue
+    }
+  }
+
+  /*
+   * Scan HTML for CDN image URLs.
+   */
+
+  const possibleImages =
+    extractPossibleImageUrls(
+      html
+    );
+
+  if (
+    possibleImages.length > 0
+  ) {
+    return {
+      type: 'image',
+
+      title:
+        ogTitle ||
+        'Instagram Photo',
+
+      thumbnail:
+        possibleImages[0],
+
+      imageUrl:
+        possibleImages[0],
+
+      ext: 'jpg',
+    };
+  }
+
+  return {
+    type: 'unknown',
+    title: '',
+  };
+}
+
+/* =========================================================
+   INSTAGRAM GALLERY-DL EXTRACTION
+   ========================================================= */
+
+async function extractInstagramWithGalleryDl(
+  targetUrl: string
+): Promise<{
+  type: 'image' | 'unknown';
+  title: string;
+  imageUrl?: string;
+  ext?: string;
+}> {
+  const result =
+    await runCommand(
+      'gallery-dl',
+      [
+        '-j',
+        '--no-download',
+        targetUrl,
+      ],
+      25000
+    );
+
+  const raw =
+    result.stdout.trim();
+
+  if (!raw) {
+    return {
+      type: 'unknown',
+      title: '',
+    };
+  }
+
+  /*
+   * gallery-dl JSON output can be:
+   *
+   * [
+   *   [
+   *     2,
+   *     "...",
+   *     {...}
+   *   ],
+   *   [
+   *     3,
+   *     "https://...",
+   *     {...}
+   *   ]
+   * ]
+   *
+   * Depending on version/output mode.
+   *
+   * Parse the complete JSON first.
+   */
+
+  let parsedOutput: unknown;
+
+  try {
+    parsedOutput =
+      JSON.parse(raw);
+  } catch {
+    /*
+     * Fallback for line-separated JSON.
+     */
+
+    const entries: unknown[] = [];
+
+    const lines =
+      raw
+        .split('\n')
+        .filter(
+          (line) =>
+            line.trim()
         );
+
+    for (const line of lines) {
+      try {
+        entries.push(
+          JSON.parse(line)
+        );
+      } catch {
+        // ignore
+      }
+    }
+
+    parsedOutput =
+      entries;
+  }
+
+  /*
+   * Normalize possible output shapes.
+   */
+
+  const entries: unknown[] = [];
+
+  if (
+    Array.isArray(
+      parsedOutput
+    )
+  ) {
+    /*
+     * Case:
+     * [
+     *   [3, "url", {...}],
+     *   [3, "url", {...}]
+     * ]
+     */
+
+    if (
+      parsedOutput.every(
+        (item) =>
+          Array.isArray(item)
+      )
+    ) {
+      entries.push(
+        ...parsedOutput
+      );
+    } else {
+      /*
+       * Could be an array containing
+       * line-parsed JSON objects.
+       */
+
+      for (
+        const item of parsedOutput
+      ) {
+        if (
+          Array.isArray(item)
+        ) {
+          entries.push(
+            item
+          );
+        }
+      }
+    }
+  }
+
+  /*
+   * IMPORTANT:
+   * Message.Url in gallery-dl is type 3.
+   */
+
+  type GalleryUrlEntry = [
+    number,
+    string,
+    Record<string, unknown>?
+  ];
+
+  const mediaEntries =
+    entries.filter(
+      (
+        entry
+      ): entry is GalleryUrlEntry =>
+        Array.isArray(entry) &&
+        entry.length >= 2 &&
+        entry[0] === 3 &&
+        typeof entry[1] === 'string'
+    );
+
+  /*
+   * Single image.
+   */
+
+  if (
+    mediaEntries.length === 1
+  ) {
+    const media =
+      mediaEntries[0];
+
+    const mediaUrl =
+      media[1];
+
+    try {
+      const parsed =
+        new URL(mediaUrl);
+
+      if (
+        isAllowedInstagramImageHost(
+          parsed.hostname
+        )
+      ) {
+        return {
+          type: 'image',
+
+          title:
+            'Instagram Photo',
+
+          imageUrl:
+            mediaUrl,
+
+          ext:
+            'jpg',
+        };
       }
     } catch {
       // ignore
     }
   }
 
-  return Array.from(
-    found
-  ).slice(0, 20);
+  return {
+    type: 'unknown',
+    title: '',
+  };
+}
+
+/* =========================================================
+   INSTAGRAM ANALYZER
+   ========================================================= */
+
+async function analyzeInstagram(
+  targetUrl: string
+): Promise<{
+  type:
+    | 'image'
+    | 'video'
+    | 'unknown';
+
+  title?: string;
+  thumbnail?: string;
+  imageUrl?: string;
+  ext?: string;
+}> {
+  /*
+   * STEP 1
+   * Public Instagram HTML.
+   */
+
+  try {
+    const htmlResult =
+      await extractInstagramFromHtml(
+        targetUrl
+      );
+
+    if (
+      htmlResult.type !==
+      'unknown'
+    ) {
+      return {
+        type:
+          htmlResult.type,
+
+        title:
+          htmlResult.title,
+
+        thumbnail:
+          htmlResult.thumbnail,
+
+        imageUrl:
+          htmlResult.imageUrl,
+
+        ext:
+          htmlResult.ext,
+      };
+    }
+  } catch (
+    err: unknown
+  ) {
+    console.error(
+      '[Instagram HTML]',
+      err
+    );
+  }
+
+  /*
+   * STEP 2
+   * gallery-dl fallback.
+   */
+
+  try {
+    const galleryResult =
+      await extractInstagramWithGalleryDl(
+        targetUrl
+      );
+
+    if (
+      galleryResult.type ===
+      'image'
+    ) {
+      return {
+        type: 'image',
+
+        title:
+          galleryResult.title,
+
+        imageUrl:
+          galleryResult.imageUrl,
+
+        thumbnail:
+          galleryResult.imageUrl,
+
+        ext:
+          galleryResult.ext ||
+          'jpg',
+      };
+    }
+  } catch (
+    err: unknown
+  ) {
+    console.error(
+      '[Instagram gallery-dl]',
+      err
+    );
+  }
+
+  return {
+    type: 'unknown',
+  };
 }
 
 /* =========================================================
@@ -710,8 +1053,7 @@ app.get(
           canonicalUrl
         );
 
-      parsed.search =
-        '';
+      parsed.search = '';
 
       canonicalUrl =
         parsed.toString();
@@ -764,6 +1106,43 @@ app.get(
           html
         );
 
+      /*
+       * Find useful snippets around
+       * og:image / image URLs.
+       */
+
+      const ogImageIndex =
+        html
+          .toLowerCase()
+          .indexOf(
+            'og:image'
+          );
+
+      let ogImageSnippet =
+        '';
+
+      if (
+        ogImageIndex >= 0
+      ) {
+        const start =
+          Math.max(
+            0,
+            ogImageIndex - 500
+          );
+
+        const end =
+          Math.min(
+            html.length,
+            ogImageIndex + 1500
+          );
+
+        ogImageSnippet =
+          html.substring(
+            start,
+            end
+          );
+      }
+
       htmlTest = {
         status:
           result.status,
@@ -780,6 +1159,11 @@ app.get(
         redirectedToLogin:
           result.finalUrl.includes(
             '/accounts/login'
+          ),
+
+        containsLoginText:
+          /accounts\/login|login_required|login required/i.test(
+            html
           ),
 
         hasOgImage:
@@ -822,6 +1206,42 @@ app.get(
             ogVideo
           ),
 
+        containsIsVideo:
+          /"is_video"\s*:\s*true/i.test(
+            html
+          ),
+
+        containsVideoVersions:
+          /"video_versions"/i.test(
+            html
+          ),
+
+        containsVideoUrl:
+          /"video_url"/i.test(
+            html
+          ),
+
+        cdnInstagramCount:
+          (
+            html.match(
+              /cdninstagram/gi
+            ) || []
+          ).length,
+
+        fbcdnCount:
+          (
+            html.match(
+              /fbcdn/gi
+            ) || []
+          ).length,
+
+        scontentCount:
+          (
+            html.match(
+              /scontent/gi
+            ) || []
+          ).length,
+
         possibleImageCount:
           possibleImages.length,
 
@@ -832,6 +1252,12 @@ app.get(
                 0,
                 1000
               )
+          ),
+
+        ogImageSnippet:
+          ogImageSnippet.substring(
+            0,
+            2500
           ),
 
         htmlStart:
@@ -925,6 +1351,46 @@ app.get(
       }
     }
 
+    /*
+     * ALSO TEST OUR EXTRACTOR
+     */
+
+    let extractorTest:
+      Record<string, unknown>;
+
+    try {
+      const result =
+        await analyzeInstagram(
+          canonicalUrl
+        );
+
+      extractorTest = {
+        type:
+          result.type,
+
+        title:
+          result.title || '',
+
+        imageUrl:
+          result.imageUrl || '',
+
+        thumbnail:
+          result.thumbnail || '',
+
+        ext:
+          result.ext || '',
+      };
+    } catch (
+      err: unknown
+    ) {
+      extractorTest = {
+        error:
+          err instanceof Error
+            ? err.message
+            : String(err),
+      };
+    }
+
     res.json({
       success: true,
 
@@ -936,6 +1402,9 @@ app.get(
 
       galleryDl:
         galleryTest,
+
+      extractor:
+        extractorTest,
     });
   }
 );
@@ -951,8 +1420,7 @@ app.get(
     res: Response
   ): void => {
     res.json({
-      status:
-        'ok',
+      status: 'ok',
 
       service:
         'linkdrop-backend',
@@ -965,274 +1433,6 @@ app.get(
     });
   }
 );
-
-/* =========================================================
-   INSTAGRAM ANALYZER
-   ========================================================= */
-
-async function analyzeInstagram(
-  targetUrl: string
-): Promise<{
-  type:
-    | 'image'
-    | 'video'
-    | 'unknown';
-
-  title?: string;
-  thumbnail?: string;
-  imageUrl?: string;
-  ext?: string;
-}> {
-  /*
-   * 1. HTML PUBLIC PAGE
-   */
-
-  try {
-    const result =
-      await fetchInstagramHtml(
-        targetUrl
-      );
-
-    const html =
-      result.html;
-
-    if (
-      result.status >= 200 &&
-      result.status < 300 &&
-      !result.finalUrl.includes(
-        '/accounts/login'
-      )
-    ) {
-      const ogImage =
-        getMetaContent(
-          html,
-          'og:image'
-        );
-
-      const ogTitle =
-        getMetaContent(
-          html,
-          'og:title'
-        );
-
-      const ogVideo =
-        getMetaContent(
-          html,
-          'og:video'
-        );
-
-      const hasVideo =
-        Boolean(
-          ogVideo
-        ) ||
-        /"is_video"\s*:\s*true/i.test(
-          html
-        ) ||
-        /"video_versions"/i.test(
-          html
-        );
-
-      if (
-        hasVideo
-      ) {
-        return {
-          type:
-            'video',
-
-          title:
-            ogTitle ||
-            'Instagram Video',
-
-          thumbnail:
-            ogImage ||
-            '',
-        };
-      }
-
-      if (
-        ogImage
-      ) {
-        try {
-          const parsed =
-            new URL(
-              ogImage
-            );
-
-          if (
-            isAllowedInstagramImageHost(
-              parsed.hostname
-            )
-          ) {
-            return {
-              type:
-                'image',
-
-              title:
-                ogTitle ||
-                'Instagram Photo',
-
-              thumbnail:
-                ogImage,
-
-              imageUrl:
-                ogImage,
-
-              ext:
-                'jpg',
-            };
-          }
-        } catch {
-          // fallback
-        }
-      }
-
-      const possibleImages =
-        extractPossibleImageUrls(
-          html
-        );
-
-      if (
-        possibleImages.length >
-        0
-      ) {
-        return {
-          type:
-            'image',
-
-          title:
-            ogTitle ||
-            'Instagram Photo',
-
-          thumbnail:
-            possibleImages[0],
-
-          imageUrl:
-            possibleImages[0],
-
-          ext:
-            'jpg',
-        };
-      }
-    }
-  } catch (
-    err: unknown
-  ) {
-    console.error(
-      '[Instagram HTML]',
-      err
-    );
-  }
-
-  /*
-   * 2. gallery-dl fallback
-   */
-
-  try {
-    const result =
-      await runCommand(
-        'gallery-dl',
-        [
-          '-j',
-          '--no-download',
-          targetUrl,
-        ],
-        25000
-      );
-
-    const lines =
-      result.stdout
-        .trim()
-        .split('\n')
-        .filter(
-          (line) =>
-            line.trim()
-        );
-
-    const entries:
-      unknown[] = [];
-
-    for (
-      const line of lines
-    ) {
-      try {
-        entries.push(
-          JSON.parse(
-            line
-          )
-        );
-      } catch {
-        // ignore
-      }
-    }
-
-    const mediaEntries =
-      entries.filter(
-        (entry) =>
-          Array.isArray(
-            entry
-          ) &&
-          entry.length >= 2 &&
-          entry[0] === 3 &&
-          typeof entry[1] ===
-            'string'
-      );
-
-    if (
-      mediaEntries.length ===
-      1
-    ) {
-      const media =
-        mediaEntries[0];
-
-      const mediaUrl =
-        media[1] as string;
-
-      try {
-        const parsed =
-          new URL(
-            mediaUrl
-          );
-
-        if (
-          isAllowedInstagramImageHost(
-            parsed.hostname
-          )
-        ) {
-          return {
-            type:
-              'image',
-
-            title:
-              'Instagram Photo',
-
-            thumbnail:
-              mediaUrl,
-
-            imageUrl:
-              mediaUrl,
-
-            ext:
-              'jpg',
-          };
-        }
-      } catch {
-        // ignore
-      }
-    }
-  } catch (
-    err: unknown
-  ) {
-    console.error(
-      '[Instagram gallery-dl]',
-      err
-    );
-  }
-
-  return {
-    type:
-      'unknown',
-  };
-}
 
 /* =========================================================
    ANALYZE
@@ -1255,6 +1455,7 @@ app.post(
     ) {
       res.status(400).json({
         success: false,
+
         message:
           'URL publik yang didukung diperlukan.',
       });
@@ -1272,6 +1473,7 @@ app.post(
     ) {
       res.status(400).json({
         success: false,
+
         message:
           safety.error ||
           'Link tidak dapat diproses.',
@@ -1281,7 +1483,7 @@ app.post(
     }
 
     /*
-     * Instagram
+     * Instagram photo.
      */
 
     if (
@@ -1300,8 +1502,7 @@ app.post(
         instagram.imageUrl
       ) {
         res.json({
-          success:
-            true,
+          success: true,
 
           platform:
             'instagram',
@@ -1322,8 +1523,7 @@ app.post(
 
           items: [
             {
-              index:
-                0,
+              index: 0,
 
               type:
                 'image',
@@ -1342,10 +1542,15 @@ app.post(
 
         return;
       }
+
+      /*
+       * If Instagram analysis failed,
+       * continue to yt-dlp below.
+       */
     }
 
     /*
-     * Video pipeline
+     * Normal video pipeline.
      */
 
     try {
@@ -1369,8 +1574,7 @@ app.post(
         );
 
       res.json({
-        success:
-          true,
+        success: true,
 
         platform:
           safety.platform,
@@ -1442,8 +1646,7 @@ app.post(
       );
 
       res.status(500).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Media tidak tersedia atau tidak dapat diproses saat ini.',
@@ -1473,8 +1676,7 @@ app.post(
         'string'
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'URL publik yang didukung diperlukan.',
@@ -1492,8 +1694,7 @@ app.post(
       !safety.safe
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           safety.error,
@@ -1507,8 +1708,7 @@ app.post(
       MAX_CONCURRENT_DOWNLOADS
     ) {
       res.status(503).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Server sibuk. Coba beberapa saat lagi.',
@@ -1520,8 +1720,7 @@ app.post(
     activeDownloadsCount++;
 
     const isAudio =
-      formatId ===
-      'audio';
+      formatId === 'audio';
 
     const ext =
       isAudio
@@ -1545,10 +1744,13 @@ app.post(
     try {
       const args = [
         '--no-playlist',
+
         '--no-warnings',
+
         '--no-check-certificates',
 
         '--max-filesize',
+
         `${MAX_FILE_SIZE_MB}m`,
 
         '-f',
@@ -1558,6 +1760,7 @@ app.post(
           : 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
 
         '-o',
+
         outputTemplate,
       ];
 
@@ -1567,18 +1770,21 @@ app.post(
         args.push(
           '--extract-audio',
           '--audio-format',
-          'mp3'
+          'mp3',
+          '--audio-quality',
+          '0'
         );
       } else {
         args.push(
           '--merge-output-format',
-          'mp4'
+          'mp4',
+
+          '--postprocessor-args',
+          'Merger+ffmpeg:-movflags +faststart'
         );
       }
 
-      args.push(
-        url
-      );
+      args.push(url);
 
       await runCommand(
         'yt-dlp',
@@ -1593,9 +1799,7 @@ app.post(
 
       const matched =
         files.find(
-          (
-            file
-          ) =>
+          (file) =>
             file.startsWith(
               jobId
             )
@@ -1645,10 +1849,6 @@ app.post(
           finalFilePath
         );
 
-      stream.pipe(
-        res
-      );
-
       const cleanup =
         () => {
           try {
@@ -1666,6 +1866,8 @@ app.post(
             // ignore
           }
         };
+
+      stream.pipe(res);
 
       res.on(
         'finish',
@@ -1703,8 +1905,7 @@ app.post(
         !res.headersSent
       ) {
         res.status(500).json({
-          success:
-            false,
+          success: false,
 
           message:
             'Gagal memproses download media.',
@@ -1739,7 +1940,8 @@ app.post(
       '';
 
     /*
-     * Re-extract dari URL asli.
+     * Prefer extracting again from
+     * the original Instagram URL.
      */
 
     if (
@@ -1774,7 +1976,7 @@ app.post(
     }
 
     /*
-     * Fallback imageUrl.
+     * Fallback to supplied image URL.
      */
 
     if (
@@ -1806,8 +2008,7 @@ app.post(
       !targetImageUrl
     ) {
       res.status(400).json({
-        success:
-          false,
+        success: false,
 
         message:
           'Foto Instagram ini tidak dapat diproses saat ini.',
@@ -1828,8 +2029,7 @@ app.post(
         )
       ) {
         res.status(400).json({
-          success:
-            false,
+          success: false,
 
           message:
             'Host gambar tidak diizinkan.',
@@ -1904,8 +2104,7 @@ app.post(
           1024
       ) {
         res.status(400).json({
-          success:
-            false,
+          success: false,
 
           message:
             'File terlalu besar untuk diproses.',
@@ -1914,7 +2113,7 @@ app.post(
         return;
       }
 
-      let ext =
+      let imageExt =
         'jpg';
 
       if (
@@ -1922,21 +2121,28 @@ app.post(
           'png'
         )
       ) {
-        ext =
+        imageExt =
           'png';
       } else if (
         contentType.includes(
           'webp'
         )
       ) {
-        ext =
+        imageExt =
           'webp';
+      } else if (
+        contentType.includes(
+          'jpeg'
+        )
+      ) {
+        imageExt =
+          'jpg';
       }
 
       const filename =
         `LinkDrop_Instagram_Photo_${Date.now()
           .toString()
-          .slice(-4)}.${ext}`;
+          .slice(-4)}.${imageExt}`;
 
       res.setHeader(
         'Content-Type',
@@ -1968,8 +2174,7 @@ app.post(
         !res.headersSent
       ) {
         res.status(500).json({
-          success:
-            false,
+          success: false,
 
           message:
             'Foto Instagram ini tidak dapat diproses saat ini.',
@@ -1980,7 +2185,7 @@ app.post(
 );
 
 /* =========================================================
-   CLEANUP
+   TEMP FILE CLEANUP
    ========================================================= */
 
 setInterval(
@@ -2021,7 +2226,7 @@ setInterval(
         }
       }
     } catch {
-      // ignore
+      // ignore cleanup errors
     }
   },
   10 *
@@ -2030,7 +2235,7 @@ setInterval(
 );
 
 /* =========================================================
-   START
+   START SERVER
    ========================================================= */
 
 app.listen(
